@@ -1,0 +1,105 @@
+[package]
+name = "glassbar"
+version = "0.1.0"
+description = "A GPU-rendered Windows 11 taskbar replacement"
+authors = ["you"]
+edition = "2021"
+default-run = "glassbar"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+# The `_lib` suffix may seem redundant but it is necessary
+# to make the lib name unique and wouldn't conflict with the bin name.
+# This seems to be only an issue on Windows, see https://github.com/rust-lang/cargo/issues/8519
+name = "glassbar_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[[bin]]
+name = "tray_probe"
+path = "src/bin/tray_probe.rs"
+
+# The glass broker service: spawned on demand by the library's clients,
+# expected next to the app's own executable. All [[bin]] targets are
+# bundled automatically by Tauri (alongside the app, same as dev builds).
+[[bin]]
+name = "glass-broker"
+path = "src/bin/glass_broker.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-opener = "2"
+# Git deps track each repo's default branch; the [patch] sections below
+# redirect both to the sibling checkouts so local edits apply instantly.
+# Glassbar is an app, never a dependency, so committing patches here is safe
+# (a library crate must not patch paths outside its own checkout).
+liquid-glass = { git = "https://github.com/alphamerics/liquid-glass" }
+glass-ui = { git = "https://github.com/alphamerics/glass-ui", features = ["tauri"] }
+chrono = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+winreg = "0.55"
+base64 = "0.22"
+png = "0.17"
+windows = { version = "0.58", features = [
+  "Devices_Bluetooth",
+  "Devices_Enumeration",
+  "Devices_Radios",
+  "Foundation",
+  "Foundation_Collections",
+  "Graphics_Capture",
+  "Graphics_DirectX",
+  "Graphics_DirectX_Direct3D11",
+  "Media_Control",
+  "Win32_Devices_Bluetooth",
+  "Win32_Devices_Display",
+  "Win32_Foundation",
+  "Win32_Globalization",
+  "Win32_Graphics_Direct3D",
+  "Win32_Graphics_Direct3D_Fxc",
+  "Win32_Graphics_Direct3D11",
+  "Win32_Graphics_Dwm",
+  "Win32_Graphics_Dxgi",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_Graphics_Gdi",
+  "Win32_Media_Audio",
+  "Win32_Media_Audio_Endpoints",
+  "Win32_NetworkManagement_WiFi",
+  "Win32_NetworkManagement_Ndis",
+  "Win32_Security",
+  "Storage_Streams",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Com",
+  "Win32_System_Diagnostics_Debug",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_LibraryLoader",
+  "Win32_System_Memory",
+  "Win32_System_Power",
+  "Win32_System_Threading",
+  "Win32_System_WinRT_Direct3D11",
+  "Win32_System_WinRT_Graphics_Capture",
+  "Win32_UI_Accessibility",
+  "Win32_UI_Controls",
+  "Win32_UI_ColorSystem",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }
+
+
+# Read the optimization guideline for more details: https://tauri.app/concept/size/#cargo-configuration
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = 3
+panic = "abort"
+strip = true
+
+[patch."https://github.com/alphamerics/liquid-glass"]
+liquid-glass = { path = "../../liquid-glass" }
+[patch."https://github.com/alphamerics/glass-ui"]
+glass-ui = { path = "../../glass-ui/native" }
+
