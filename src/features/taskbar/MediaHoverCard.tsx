@@ -57,11 +57,34 @@ export function MediaHoverCard({
   const cardId = useId();
   const cardRef = useRef<HTMLDivElement | null>(null);
   const [thumbnail, setThumbnail] = useState<string | null>(null);
-  // The position is decided once, at open time (measured before the first
-  // paint), and never re-clamped while the card stays visible — track
-  // changes that resize the card must not drag it around mid-session.
-  const [frozenLeft, setFrozenLeft] = useState<number | null>(null);
 
+  // The card is `position: fixed`, so it should be exempt from reflows —
+  // but two things still move it when a track changes. First, its ancestor
+  // (the scaled pill) is the containing block, so raw CSS coordinates drift
+  // whenever the pill reflows inside the webview. Second — invisible to any
+  // CSS-level fix — the overlay WINDOW itself re-centers when the pill's
+  // content width changes (a longer title widens the pill, the native appbar
+  // reposition slides the window left, a shorter one slides it right), and
+  // the webview rides along. So the open-time spot is remembered in DESKTOP
+  // coordinates, and a per-frame loop continuously re-derives the
+  // viewport-space edges from the window's CURRENT screen position: the card
+  // stays stationary on the screen, under the cursor, following the native
+  // reposition spring frame by frame instead of teleporting per commit.
+  // The right edge is the anchor because the transport controls hug the
+  // card's right side — track changes stretch the card leftward (the
+  // flexible title/art, animated smoothly via CSS) so the buttons never move.
+  interface CardPin {
+    targetRight: number;
+    targetBottom: number;
+  }
+  const [pin, setPin] = useState<CardPin | null>(null);
+  // The live CSS coordinates. The rAF loop mutates this and the element's
+  // inline style directly between renders; every re-render reads the latest
+  // values here, so React and the imperative loop stay in lockstep.
+  const position = useRef({ left: 0, bottom: 0 });
+
+  // Decides the open-time position and the desktop target the card must
+  // hold. Runs pre-paint on mount, so the centered fallback never paints.
   useLayoutEffect(() => {
     const element = cardRef.current;
     if (!element) {
@@ -69,15 +92,72 @@ export function MediaHoverCard({
     }
     const width = element.offsetWidth;
     const center = anchor.left + anchor.width / 2;
-    setFrozenLeft(
-      Math.min(
-        Math.max(center - width / 2, VIEWPORT_MARGIN),
-        window.innerWidth - VIEWPORT_MARGIN - width,
-      ),
+    const targetLeft = Math.min(
+      Math.max(center - width / 2, VIEWPORT_MARGIN),
+      window.innerWidth - VIEWPORT_MARGIN - width,
     );
+    // The card's bottom edge sits 13px above the gadget's top edge.
+    const targetBottom = anchor.top - 13;
+    position.current = {
+      left: targetLeft,
+      bottom: window.innerHeight - anchor.top + 13,
+    };
+    setPin({
+      targetRight: window.screenX + targetLeft + width,
+      targetBottom: window.screenY + targetBottom,
+    });
     // `anchor` is a fresh rect only when the card (re)opens, so this does
     // not re-run when the media snapshot changes underneath an open card.
   }, [anchor]);
+
+  // The drift compensator: every frame the card is open, measures where the
+  // card ACTUALLY landed and nudges the CSS coordinates so its right edge
+  // returns to the open-time DESKTOP spot. The wanted viewport edges track
+  // window.screenX/screenY, so the native reposition spring (window slides
+  // while the pill re-centers) is followed frame by frame, keeping the card
+  // glued to the desktop instead of flickering between commit-time fixes.
+  useEffect(() => {
+    if (!pin) {
+      return;
+    }
+    let frame = 0;
+    const compensate = () => {
+      const element = cardRef.current;
+      if (!element) {
+        return;
+      }
+      const rect = element.getBoundingClientRect();
+      const wantedRight = Math.max(
+        VIEWPORT_MARGIN,
+        Math.min(
+          pin.targetRight - window.screenX,
+          window.innerWidth - VIEWPORT_MARGIN,
+        ),
+      );
+      const wantedBottom = Math.max(
+        VIEWPORT_MARGIN,
+        Math.min(
+          pin.targetBottom - window.screenY,
+          window.innerHeight - VIEWPORT_MARGIN,
+        ),
+      );
+      const rightDrift = wantedRight - rect.right;
+      const bottomDrift = rect.bottom - wantedBottom;
+      if (Math.abs(rightDrift) >= 0.5 || Math.abs(bottomDrift) >= 0.5) {
+        // A larger CSS `bottom` value raises the card, shrinking
+        // rect.bottom — hence the sign flip; the desktop target is fixed.
+        position.current = {
+          left: position.current.left + rightDrift,
+          bottom: position.current.bottom + bottomDrift,
+        };
+        element.style.left = `${position.current.left}px`;
+        element.style.bottom = `${position.current.bottom}px`;
+      }
+      frame = requestAnimationFrame(compensate);
+    };
+    frame = requestAnimationFrame(compensate);
+    return () => cancelAnimationFrame(frame);
+  }, [pin]);
 
   useLiquidGlassSurface(
     true,
@@ -215,24 +295,26 @@ export function MediaHoverCard({
     void mediaSeek(position);
   };
 
-  // The position never moves, so a track change that makes the card grow
-  // can only extend it rightward; cap the growth at the viewport edge.
-  const maxWidth = frozenLeft
+  // The right edge is pinned to its open-time desktop spot, so a track
+  // change makes the card grow leftward (the transport controls stay put);
+  // cap the growth where the left edge would leave the viewport.
+  const maxWidth = pin
     ? Math.min(
         MAX_CARD_WIDTH,
-        window.innerWidth - VIEWPORT_MARGIN - frozenLeft,
+        pin.targetRight - window.screenX - VIEWPORT_MARGIN,
       )
     : Math.min(MAX_CARD_WIDTH, window.innerWidth - VIEWPORT_MARGIN * 2);
   const style: CSSProperties = {
-    bottom: window.innerHeight - anchor.top + 13,
     width: "max-content",
     maxWidth,
-    // Before the frozen position is computed (same commit, pre-paint),
-    // center via translate as a fallback; it never actually shows.
-    ...(frozenLeft !== null
-      ? { left: frozenLeft }
+    // Once the pin exists, left/bottom come from the live position (the rAF
+    // loop keeps them expressed against the window's current screen offset);
+    // renders re-apply the latest values, never fighting the loop.
+    ...(pin
+      ? { left: position.current.left, bottom: position.current.bottom }
       : {
           left: anchor.left + anchor.width / 2,
+          bottom: window.innerHeight - anchor.top + 13,
           transform: "translateX(-50%)",
         }),
   };

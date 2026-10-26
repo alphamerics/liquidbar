@@ -14,8 +14,11 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 
 // Chromium's default context menu (and its devtools entries) never fits a
-// taskbar shell; the app provides its own right-click menus.
-window.addEventListener("contextmenu", (event) => event.preventDefault());
+// taskbar shell; the app provides its own right-click menus. In dev, keep it
+// available for inspecting pages through the webview's devtools.
+if (import.meta.env.PROD) {
+  window.addEventListener("contextmenu", (event) => event.preventDefault());
+}
 
 // Devtools stay available in dev builds; production can't open them at all
 // (no tauri devtools feature), and the shortcuts are blocked for safety.

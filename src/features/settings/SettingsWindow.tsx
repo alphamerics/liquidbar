@@ -32,11 +32,11 @@ const PANES: SettingsPane[] = [
 ];
 
 const TINT_PRESETS: Array<{ name: string; color: [number, number, number] }> = [
-  { name: "Red", color: [1.0, 0.25, 0.25] },
+  { name: "Black", color: [0.0, 0.0, 0.0] },
   { name: "Blue", color: [0.15, 0.5, 1.0] },
   { name: "Purple", color: [0.65, 0.35, 0.95] },
   { name: "Pink", color: [1.0, 0.4, 0.7] },
-  { name: "Orange", color: [1.0, 0.55, 0.15] },
+  { name: "Red", color: [1.0, 0.25, 0.25] },
   { name: "Green", color: [0.3, 0.85, 0.4] },
   { name: "Graphite", color: [0.65, 0.65, 0.7] },
 ];

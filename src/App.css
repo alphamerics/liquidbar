@@ -351,6 +351,13 @@ body.app-drag-active * {
   border-radius: 20px;
   color: rgba(255, 255, 255, 0.92);
   min-width: 400px;
+  /* Smooth resize: `interpolate-size` lets width transition between its
+     content-driven sizes (max-content to max-content), so a track change
+     grows/shrinks the card with an ease instead of snapping — while the JS
+     drift compensator holds the right edge (the transport controls) still,
+     only the flexible title/art side slides. */
+  interpolate-size: allow-keywords;
+  transition: width 240ms cubic-bezier(0.33, 1, 0.68, 1);
 }
 
 .media-hover-body {
@@ -679,15 +686,36 @@ body.app-drag-active * {
   padding: 22px 26px 40px;
 }
 
-.settings-content::-webkit-scrollbar {
-  width: 10px;
+/* Global custom scrollbar: no track, no buttons — a slim translucent handle
+   floats over the glass. The handle is kept clear of the rounded glass
+   corners by a uniform transparent border: the strip is sized so the painted
+   handle sits 12px in from the right edge and 12px clear of the top/bottom
+   ends. (Chromium ignores margin/padding on scrollbar pseudo-elements and
+   drops insets if the border exceeds the strip — width MUST stay
+   border*2 + visible: 12*2 + 6 = 30px here.) */
+::-webkit-scrollbar {
+  width: 30px; /* 12px transparent border + 6px visible handle + 12px transparent border */
 }
 
-.settings-content::-webkit-scrollbar-thumb {
-  border: 3px solid transparent;
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-button,
+::-webkit-scrollbar-corner {
+  display: none;
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  border: 12px solid transparent;
+  min-height: 36px; /* so the transparent border can never swallow the handle */
   border-radius: 999px;
-  background-color: rgba(127, 127, 127, 0.4);
-  background-clip: content-box;
+  background-color: rgba(255, 255, 255, 0.28); /* color-only: "background" shorthand would reset background-clip */
+  background-clip: padding-box;
+  box-shadow: none;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(255, 255, 255, 0.45);
+  background-clip: padding-box;
 }
 
 .settings-content-title {
@@ -1417,36 +1445,6 @@ body.app-drag-active * {
   flex: 0 0 auto;
   height: 1px;
   background: rgba(255, 255, 255, 0.14);
-}
-
-/* Custom scrollbar fitted to the transparent panel: no track, no buttons —
-   only a slim rounded handle floats over the glass. */
-.cc-netlist::-webkit-scrollbar,
-.cc-sound::-webkit-scrollbar {
-  width: 6px;
-}
-
-.cc-netlist::-webkit-scrollbar-track,
-.cc-netlist::-webkit-scrollbar-button,
-.cc-netlist::-webkit-scrollbar-corner,
-.cc-sound::-webkit-scrollbar-track,
-.cc-sound::-webkit-scrollbar-button,
-.cc-sound::-webkit-scrollbar-corner {
-  display: none;
-  background: transparent;
-}
-
-.cc-netlist::-webkit-scrollbar-thumb,
-.cc-sound::-webkit-scrollbar-thumb {
-  border: none;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.28);
-  box-shadow: none;
-}
-
-.cc-netlist::-webkit-scrollbar-thumb:hover,
-.cc-sound::-webkit-scrollbar-thumb:hover {
-  background: rgba(255, 255, 255, 0.45);
 }
 
 .cc-net-row {
