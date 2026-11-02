@@ -12,6 +12,7 @@ pub mod preview;
 mod radios;
 
 mod hidden;
+pub mod hover;
 pub mod keyboard;
 pub use keyboard::KeyboardLayout;
 mod taskbar_state;

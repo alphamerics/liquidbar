@@ -93,6 +93,11 @@ pub struct GlassbarSettings {
     pub reserve_space: bool,
     #[serde(skip_serializing)]
     pub refraction_strength: f64,
+    /// The liquid glass performance preset ("auto" | "high" | "balanced" |
+    /// "efficiency"): a material field, so it lives in the shared
+    /// material.json exactly like the appearance values below.
+    #[serde(skip_serializing)]
+    pub quality: liquid_glass::QualityMode,
     #[serde(skip_serializing)]
     pub blur_radius: f64,
     /// Kawase blur chain level count (1..4): more levels blur deeper and
@@ -103,6 +108,10 @@ pub struct GlassbarSettings {
     pub tint_strength: f64,
     #[serde(skip_serializing)]
     pub tint_color: [f64; 3],
+    #[serde(skip_serializing)]
+    pub vibrancy: f64,
+    #[serde(skip_serializing)]
+    pub vibrancy_saturation: f64,
     #[serde(skip_serializing)]
     pub edge_band: f64,
     #[serde(skip_serializing)]
@@ -119,6 +128,10 @@ pub struct GlassbarSettings {
     pub outline_mirror: f64,
     #[serde(skip_serializing)]
     pub outline_fade: f64,
+    /// Strength of the rim's inner contact shadow on the bevel slope turned
+    /// away from the light (0 disables it).
+    #[serde(skip_serializing)]
+    pub rim_shadow: f64,
     /// Uniform black border around every glass surface: thickness in
     /// physical pixels and constant opacity (0..1).
     #[serde(skip_serializing)]
@@ -194,10 +207,13 @@ impl Default for GlassbarSettings {
         let mut settings = Self {
             reserve_space: false,
             refraction_strength: 0.0,
+            quality: liquid_glass::QualityMode::Auto,
             blur_radius: 0.0,
             blur_samples: 0.0,
             tint_strength: 0.0,
             tint_color: [0.0; 3],
+            vibrancy: 0.0,
+            vibrancy_saturation: 0.0,
             edge_band: 0.0,
             chromatic_offset: 0.0,
             chromatic_blend: 0.0,
@@ -206,6 +222,7 @@ impl Default for GlassbarSettings {
             outline_angle: 0.0,
             outline_mirror: 0.0,
             outline_fade: 600.0,
+            rim_shadow: 0.35,
             border_thickness: 2.5,
             border_opacity: 0.1,
             turbulence_strength: 0.0,
@@ -245,6 +262,7 @@ impl Default for GlassbarSettings {
 /// `Default` (the material's defaults are the defaults).
 pub fn apply_material(settings: &mut GlassbarSettings, material: &liquid_glass::Material) {
     settings.refraction_strength = material.refraction_strength as f64;
+    settings.quality = material.quality;
     settings.blur_radius = material.blur_radius as f64;
     settings.blur_samples = material.blur_samples as f64;
     settings.tint_strength = material.tint_strength as f64;
@@ -253,6 +271,8 @@ pub fn apply_material(settings: &mut GlassbarSettings, material: &liquid_glass::
         material.glass_tint[1] as f64,
         material.glass_tint[2] as f64,
     ];
+    settings.vibrancy = material.vibrancy as f64;
+    settings.vibrancy_saturation = material.vibrancy_saturation as f64;
     settings.edge_band = material.edge_band as f64;
     settings.chromatic_offset = material.chromatic_offset as f64;
     settings.chromatic_blend = material.chromatic_blend as f64;
@@ -261,6 +281,7 @@ pub fn apply_material(settings: &mut GlassbarSettings, material: &liquid_glass::
     settings.outline_angle = material.outline_angle as f64;
     settings.outline_mirror = material.outline_mirror as f64;
     settings.outline_fade = material.outline_fade as f64;
+    settings.rim_shadow = material.rim_shadow as f64;
     settings.border_thickness = material.border_thickness as f64;
     settings.border_opacity = material.border_opacity as f64;
     settings.turbulence_strength = material.turbulence_strength as f64;
@@ -289,6 +310,7 @@ pub fn full_json(settings: &GlassbarSettings) -> serde_json::Value {
 /// global material file.
 pub fn material_from(settings: &GlassbarSettings) -> liquid_glass::Material {
     liquid_glass::Material {
+        quality: settings.quality,
         refraction_strength: settings.refraction_strength as f32,
         blur_radius: settings.blur_radius as f32,
         blur_samples: settings.blur_samples as f32,
@@ -298,6 +320,8 @@ pub fn material_from(settings: &GlassbarSettings) -> liquid_glass::Material {
             settings.tint_color[1] as f32,
             settings.tint_color[2] as f32,
         ],
+        vibrancy: settings.vibrancy as f32,
+        vibrancy_saturation: settings.vibrancy_saturation as f32,
         edge_band: settings.edge_band as f32,
         chromatic_offset: settings.chromatic_offset as f32,
         chromatic_blend: settings.chromatic_blend as f32,
@@ -306,6 +330,7 @@ pub fn material_from(settings: &GlassbarSettings) -> liquid_glass::Material {
         outline_angle: settings.outline_angle as f32,
         outline_mirror: settings.outline_mirror as f32,
         outline_fade: settings.outline_fade as f32,
+        rim_shadow: settings.rim_shadow as f32,
         border_thickness: settings.border_thickness as f32,
         border_opacity: settings.border_opacity as f32,
         turbulence_strength: settings.turbulence_strength as f32,
@@ -327,6 +352,8 @@ pub fn shader_params_from(settings: &GlassbarSettings) -> liquid_glass::GlassSha
             settings.tint_color[1] as f32,
             settings.tint_color[2] as f32,
         ],
+        vibrancy: settings.vibrancy as f32,
+        vibrancy_saturation: settings.vibrancy_saturation as f32,
         edge_band: settings.edge_band as f32,
         chromatic_offset_texels: settings.chromatic_offset as f32,
         chromatic_blend: settings.chromatic_blend as f32,
@@ -335,6 +362,7 @@ pub fn shader_params_from(settings: &GlassbarSettings) -> liquid_glass::GlassSha
         outline_angle_degrees: settings.outline_angle as f32,
         outline_mirror: settings.outline_mirror as f32,
         outline_fade_px: settings.outline_fade as f32,
+        rim_shadow_strength: settings.rim_shadow as f32,
         border_thickness_px: settings.border_thickness as f32,
         border_opacity: settings.border_opacity as f32,
         turbulence_strength: settings.turbulence_strength as f32,

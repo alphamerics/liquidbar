@@ -362,6 +362,32 @@ export function SettingsWindow() {
 
         {activePane.id === "liquid-glass" && (
           <>
+            <SettingsGroup title="Performance">
+              <OptionRow label="Quality">
+                <RadioGroup>
+                  {[
+                    { value: "auto", label: "Auto" },
+                    { value: "high", label: "High" },
+                    { value: "balanced", label: "Balanced" },
+                    { value: "efficiency", label: "Efficiency" },
+                  ].map((option) => (
+                    <RadioOption
+                      key={option.value}
+                      title={option.label}
+                      label={option.label}
+                      checked={settings.quality === option.value}
+                      onSelect={() => update({ quality: option.value })}
+                    />
+                  ))}
+                </RadioGroup>
+              </OptionRow>
+              <p className="settings-pane-note">
+                Auto matches the tier to your GPU and power state. Lower tiers
+                cap the backdrop refresh rate, run the blur at a reduced
+                internal resolution and use a lighter composite shader —
+                near-identical visuals for far less GPU work.
+              </p>
+            </SettingsGroup>
             <SettingsGroup title="Liquid Glass">
               <SliderRow
                 label="Refraction strength"
@@ -403,6 +429,22 @@ export function SettingsWindow() {
                 max={1}
                 step={0.01}
                 onChange={(tintStrength) => update({ tintStrength })}
+              />
+              <SliderRow
+                label="Vibrancy"
+                value={settings.vibrancy}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(vibrancy) => update({ vibrancy })}
+              />
+              <SliderRow
+                label="Vibrancy saturation"
+                value={settings.vibrancySaturation}
+                min={0}
+                max={1}
+                step={0.01}
+                onChange={(vibrancySaturation) => update({ vibrancySaturation })}
               />
               <OptionRow label="Tint color">
                 <RadioGroup>

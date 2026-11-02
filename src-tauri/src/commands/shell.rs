@@ -33,9 +33,11 @@ pub struct PreviewRect {
     pub radius: Option<f64>,
 }
 
-/// Shows (or hides) the live DWM-thumbnail preview of one app window. The
+/// Shows (or hides) the GPU-rendered live preview of one app window. The
 /// rect is in physical pixels relative to the overlay's top-left corner; the
-/// radius is the thumbnail's corner radius in physical pixels.
+/// radius is the thumbnail's corner radius in physical pixels (the webview
+/// pushes the nested rule's value: outer glass radius minus the popup's
+/// scaled padding).
 #[tauri::command]
 pub fn set_window_preview(
     window: tauri::WebviewWindow,

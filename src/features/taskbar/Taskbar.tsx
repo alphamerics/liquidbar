@@ -17,6 +17,7 @@ import {
   type TaskbarApp,
 } from "../../lib/shell";
 import { useGadgets } from "../gadgets/registry";
+import { onDomMutations } from "glass-ui";
 import { AppTaskbarButton } from "./AppTaskbarButton";
 import { ControlCenter } from "./ControlCenter";
 import { IconButton } from "./IconButton";
@@ -129,33 +130,19 @@ function useTaskbarWidthReporting(): void {
     send(desired);
   }, [send]);
   useEffect(() => {
-    let frame = 0;
-    const pushSettled = () => {
-      if (frame) {
-        return;
-      }
-      frame = requestAnimationFrame(() => {
-        frame = requestAnimationFrame(() => {
-          frame = 0;
-          push();
-        });
-      });
-    };
-    pushSettled();
+    // The shared DOM lane (one body-subtree observer for the whole app,
+    // with its own double-rAF settle) plus the content ResizeObserver.
     const content = document.querySelector<HTMLElement>(".taskbar-content");
-    const observer = new ResizeObserver(pushSettled);
+    const observer = new ResizeObserver(push);
     if (content) {
       observer.observe(content);
     }
-    const mutation = new MutationObserver(pushSettled);
-    mutation.observe(document.body, { childList: true, subtree: true });
+    const unsubscribe = onDomMutations(push);
     const timer = window.setInterval(push, 250);
+    push();
     return () => {
-      if (frame) {
-        cancelAnimationFrame(frame);
-      }
       observer.disconnect();
-      mutation.disconnect();
+      unsubscribe();
       window.clearInterval(timer);
     };
   }, [push]);
@@ -188,27 +175,13 @@ function useUiHitRects(): void {
     void setUiHitRects(rects);
   }, []);
   useEffect(() => {
-    let frame = 0;
-    const pushSettled = () => {
-      if (frame) {
-        return;
-      }
-      frame = requestAnimationFrame(() => {
-        frame = requestAnimationFrame(() => {
-          frame = 0;
-          push();
-        });
-      });
-    };
-    pushSettled();
-    const observer = new MutationObserver(pushSettled);
-    observer.observe(document.body, { childList: true, subtree: true });
+    // The shared DOM lane (one body-subtree observer for the whole app,
+    // with its own double-rAF settle) plus a fallback interval.
+    const unsubscribe = onDomMutations(push);
     const timer = window.setInterval(push, 120);
+    push();
     return () => {
-      if (frame) {
-        cancelAnimationFrame(frame);
-      }
-      observer.disconnect();
+      unsubscribe();
       window.clearInterval(timer);
       void setUiHitRects([]);
     };
@@ -419,7 +392,6 @@ const SETTLE_DURATION_MS = 600;
 interface TaskbarProps {
   snapshot: ShellSnapshot;
   media: MediaSnapshot | null;
-  mediaLevels: number[];
   isSettingsOpen: boolean;
   onSettingsOpenChange: (open: boolean) => void;
   onPinnedChange: () => void;
@@ -523,7 +495,6 @@ function usePillResizeAnimation(): void {
 export function Taskbar({
   snapshot,
   media,
-  mediaLevels,
   isSettingsOpen,
   onSettingsOpenChange,
   onPinnedChange,
@@ -1111,7 +1082,7 @@ export function Taskbar({
 
 <div className="taskbar-right">
           <div className="taskbar-gadget-shell">
-          {media?.title && <MediaGadget media={media} mediaLevels={mediaLevels} />}
+          {media?.title && <MediaGadget media={media} />}
           </div>
           <ControlCenter
             open={isSettingsOpen}

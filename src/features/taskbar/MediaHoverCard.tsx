@@ -121,37 +121,48 @@ export function MediaHoverCard({
       return;
     }
     let frame = 0;
+    // The measure (getBoundingClientRect) forces layout, so only run it on
+    // frames where the window actually moved: a static pill — the common
+    // case — costs a cheap screenX/Y read per frame, not a layout pass.
+    let lastScreenLeft = NaN;
+    let lastScreenTop = NaN;
     const compensate = () => {
       const element = cardRef.current;
       if (!element) {
         return;
       }
-      const rect = element.getBoundingClientRect();
-      const wantedRight = Math.max(
-        VIEWPORT_MARGIN,
-        Math.min(
-          pin.targetRight - window.screenX,
-          window.innerWidth - VIEWPORT_MARGIN,
-        ),
-      );
-      const wantedBottom = Math.max(
-        VIEWPORT_MARGIN,
-        Math.min(
-          pin.targetBottom - window.screenY,
-          window.innerHeight - VIEWPORT_MARGIN,
-        ),
-      );
-      const rightDrift = wantedRight - rect.right;
-      const bottomDrift = rect.bottom - wantedBottom;
-      if (Math.abs(rightDrift) >= 0.5 || Math.abs(bottomDrift) >= 0.5) {
-        // A larger CSS `bottom` value raises the card, shrinking
-        // rect.bottom — hence the sign flip; the desktop target is fixed.
-        position.current = {
-          left: position.current.left + rightDrift,
-          bottom: position.current.bottom + bottomDrift,
-        };
-        element.style.left = `${position.current.left}px`;
-        element.style.bottom = `${position.current.bottom}px`;
+      const screenLeft = window.screenX;
+      const screenTop = window.screenY;
+      if (screenLeft !== lastScreenLeft || screenTop !== lastScreenTop) {
+        lastScreenLeft = screenLeft;
+        lastScreenTop = screenTop;
+        const rect = element.getBoundingClientRect();
+        const wantedRight = Math.max(
+          VIEWPORT_MARGIN,
+          Math.min(
+            pin.targetRight - window.screenX,
+            window.innerWidth - VIEWPORT_MARGIN,
+          ),
+        );
+        const wantedBottom = Math.max(
+          VIEWPORT_MARGIN,
+          Math.min(
+            pin.targetBottom - window.screenY,
+            window.innerHeight - VIEWPORT_MARGIN,
+          ),
+        );
+        const rightDrift = wantedRight - rect.right;
+        const bottomDrift = rect.bottom - wantedBottom;
+        if (Math.abs(rightDrift) >= 0.5 || Math.abs(bottomDrift) >= 0.5) {
+          // A larger CSS `bottom` value raises the card, shrinking
+          // rect.bottom — hence the sign flip; the desktop target is fixed.
+          position.current = {
+            left: position.current.left + rightDrift,
+            bottom: position.current.bottom + bottomDrift,
+          };
+          element.style.left = `${position.current.left}px`;
+          element.style.bottom = `${position.current.bottom}px`;
+        }
       }
       frame = requestAnimationFrame(compensate);
     };

@@ -5,27 +5,27 @@ import {
   toggleMediaPlay,
   type MediaSnapshot,
 } from "../../lib/shell";
+import { useHoverPanel } from "./hoverPanel";
 import { MediaHoverCard } from "./MediaHoverCard";
 import { IconButton } from "./IconButton";
-
-const IDLE_LEVELS = [0.1, 0.1, 0.1, 0.1, 0.1];
-const CLOSE_GRACE_MS = 350;
+import { MediaWave } from "./MediaWave";
 
 interface MediaGadgetProps {
   media: MediaSnapshot;
-  mediaLevels: number[];
 }
 
 /**
  * The audio gadget: the waveform, track title and play/pause button inside
  * the taskbar pill. Clicking it toggles the media card above the pill;
  * leaving either the gadget or the card closes it after a grace period
- * that lets the cursor travel between them.
+ * that lets the cursor travel between them. The open/close machine is the
+ * taskbar's shared hover system (hoverPanel.ts) — the same one the app
+ * previews run on, so the card's grace, its cancel rules and the native
+ * `hover-blur` escape hatch behave identically.
  */
-export function MediaGadget({ media, mediaLevels }: MediaGadgetProps) {
-  const [cardAnchor, setCardAnchor] = useState<DOMRect | null>(null);
+export function MediaGadget({ media }: MediaGadgetProps) {
+  const panel = useHoverPanel();
   const gadgetRef = useRef<HTMLDivElement | null>(null);
-  const closeTimer = useRef(0);
   // Optimistic play/pause: flip instantly on click, then yield to the
   // authoritative snapshot once it confirms (or after a grace period).
   const [playingOverride, setPlayingOverride] = useState<boolean | null>(null);
@@ -43,25 +43,15 @@ export function MediaGadget({ media, mediaLevels }: MediaGadgetProps) {
     return () => window.clearTimeout(timer);
   }, [playingOverride, media]);
 
-  useEffect(
-    () => () => {
-      window.clearTimeout(closeTimer.current);
-    },
-    [],
-  );
-
-  const clearCloseTimer = () => window.clearTimeout(closeTimer.current);
-
   const toggleCard = () => {
-    clearCloseTimer();
-    setCardAnchor((current) =>
-      current ? null : gadgetRef.current?.getBoundingClientRect() ?? null,
-    );
-  };
-
-  const scheduleClose = () => {
-    clearCloseTimer();
-    closeTimer.current = window.setTimeout(() => setCardAnchor(null), CLOSE_GRACE_MS);
+    if (panel.isOpen) {
+      panel.close();
+      return;
+    }
+    const rect = gadgetRef.current?.getBoundingClientRect();
+    if (rect) {
+      panel.open(rect);
+    }
   };
 
   const handlePlayPause = useCallback(() => {
@@ -83,20 +73,12 @@ export function MediaGadget({ media, mediaLevels }: MediaGadgetProps) {
           if (event.pointerType === "touch") {
             return;
           }
-          clearCloseTimer();
+          panel.cancelClose();
           void prewarmMenuGlass(7);
         }}
-        onPointerLeave={scheduleClose}
+        onPointerLeave={panel.scheduleClose}
       >
-        <span className="media-wave" aria-hidden="true">
-          {(mediaLevels.length === 5 ? mediaLevels : IDLE_LEVELS).map((level, index) => (
-            <span
-              key={index}
-              className="media-wave-bar"
-              style={{ height: `${Math.round(Math.max(10, level * 100))}%` }}
-            />
-          ))}
-        </span>
+        <MediaWave />
         <span className="media-gadget-text">
           {media.artist ? `${media.artist} | ${media.title}` : media.title}
         </span>
@@ -111,13 +93,13 @@ export function MediaGadget({ media, mediaLevels }: MediaGadgetProps) {
           {effectivePlaying ? <Pause size={14} /> : <Play size={14} />}
         </IconButton>
       </div>
-      {cardAnchor && (
+      {panel.anchor && (
         <MediaHoverCard
           media={media}
           isPlaying={effectivePlaying}
           onTogglePlay={handlePlayPause}
-          anchor={cardAnchor}
-          onHover={(hovering) => (hovering ? clearCloseTimer() : scheduleClose())}
+          anchor={panel.anchor}
+          onHover={panel.onPopupHover}
         />
       )}
     </>

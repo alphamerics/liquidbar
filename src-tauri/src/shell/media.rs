@@ -4,6 +4,7 @@
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Serialize;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use tauri::Emitter;
 use windows::Media::Control::{
@@ -203,6 +204,19 @@ fn fetch_thumbnail(
 /// pegs that service's CPU, so it is fetched once and reused until it fails.
 static MANAGER: Mutex<Option<GlobalSystemMediaTransportControlsSessionManager>> = Mutex::new(None);
 
+/// Bumped by transport actions so the monitor's idle sleep ends quickly and
+/// the waveform starts dancing the moment playback resumes.
+static MONITOR_WAKE: AtomicU64 = AtomicU64::new(0);
+
+/// The static bars emitted exactly once when playback stops, so the UI can
+/// settle without the monitor emitting at 20 Hz forever. Matches the
+/// frontend's idle fallback heights.
+const IDLE_BARS: [f32; 5] = [0.1, 0.1, 0.1, 0.1, 0.1];
+
+/// Payload deltas below this are invisible at bar size (a bar height step of
+/// 1% is ~0.15 px); emitting identical frames would still churn DWM.
+const LEVEL_EPSILON: f32 = 0.004;
+
 fn cached_manager() -> Option<GlobalSystemMediaTransportControlsSessionManager> {
     MANAGER
         .lock()
@@ -219,6 +233,13 @@ fn evict_manager() {
 /// Starts the background thread that polls media sessions and streams the
 /// render peak meter to the UI. COM must be initialized on the polling
 /// thread; WinRT async calls are blocked on there.
+///
+/// The level stream is emission-gated: while nothing plays, the bars are
+/// visually constant, so the monitor emits one idle frame and then goes
+/// fully silent instead of emitting 20 payloads/second forever. A constant
+/// 20 Hz emit re-renders the taskbar DOM, keeps DWM recompositing the pill,
+/// and thereby keeps the glass capture + blur pipeline hot on the GPU for
+/// no visual reason.
 pub fn start_monitor(app: tauri::AppHandle) {
     std::thread::spawn(move || {
         unsafe {
@@ -228,11 +249,28 @@ pub fn start_monitor(app: tauri::AppHandle) {
         let mut meter: Option<IAudioMeterInformation> = None;
         let mut level: f32 = 0.0;
         let mut tick: f32 = 0.0;
+        let mut last_bars: Option<[f32; 5]> = None;
+        let mut idle_settled = false;
         loop {
             match poll_media() {
                 Ok(snapshot) => {
                     has_logged_error = false;
-                    *MEDIA.lock().expect("media lock poisoned") = snapshot;
+                    // Publish track identity changes (new track, play/pause,
+                    // session swap) as events so the UI can drop its polling
+                    // of media entirely. Position drifts every poll and is
+                    // excluded from the comparison on purpose.
+                    let changed = {
+                        let guard = MEDIA.lock().expect("media lock poisoned");
+                        guard.title != snapshot.title
+                            || guard.artist != snapshot.artist
+                            || guard.app != snapshot.app
+                            || guard.is_playing != snapshot.is_playing
+                            || guard.duration_secs != snapshot.duration_secs
+                    };
+                    *MEDIA.lock().expect("media lock poisoned") = snapshot.clone();
+                    if changed {
+                        let _ = app.emit("media-changed", &snapshot);
+                    }
                 }
                 Err(error) => {
                     // The cached manager (or the service behind it) went
@@ -245,6 +283,30 @@ pub fn start_monitor(app: tauri::AppHandle) {
                 }
             }
             let playing = MEDIA.lock().expect("media lock poisoned").title.is_some();
+            if !playing && level < 0.01 {
+                // Fully idle: no session to animate and the decay tail has
+                // settled. Drop the endpoint meter and sleep out the rest of
+                // the poll cycle without touching it again.
+                meter = None;
+                if !idle_settled {
+                    let _ = app.emit("media-levels", IDLE_BARS);
+                    last_bars = Some(IDLE_BARS);
+                    idle_settled = true;
+                }
+                // Cut the idle sleep short when a transport action fires so
+                // playback restarts without waiting out the poll interval.
+                let wake = MONITOR_WAKE.load(Ordering::Relaxed);
+                let mut slept = 0u32;
+                while slept < 1400 {
+                    if MONITOR_WAKE.load(Ordering::Relaxed) != wake {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    slept += 100;
+                }
+                continue;
+            }
+            idle_settled = false;
             // ~20 level updates per second for 1.5 seconds, then the media
             // session poll runs again.
             for _ in 0..30 {
@@ -271,11 +333,25 @@ pub fn start_monitor(app: tauri::AppHandle) {
                     (boost * wave(3.3, 0.6)).clamp(0.05, 1.0),
                 ];
                 tick += 1.0;
-                let _ = app.emit("media-levels", bars);
+                if bars_changed(last_bars, bars) {
+                    let _ = app.emit("media-levels", bars);
+                    last_bars = Some(bars);
+                }
                 std::thread::sleep(std::time::Duration::from_millis(50));
             }
         }
     });
+}
+
+/// Whether the new bar payload differs visually from the last emitted one.
+fn bars_changed(previous: Option<[f32; 5]>, bars: [f32; 5]) -> bool {
+    match previous {
+        None => true,
+        Some(previous) => previous
+            .iter()
+            .zip(&bars)
+            .any(|(old, new)| (old - new).abs() > LEVEL_EPSILON),
+    }
 }
 
 pub fn snapshot() -> MediaSnapshot {
@@ -287,6 +363,9 @@ pub fn snapshot() -> MediaSnapshot {
 /// do not own). After the action it re-polls and publishes the fresh status
 /// immediately so the buttons update without waiting for the next poll cycle.
 pub fn transport(app: tauri::AppHandle, action: TransportAction) {
+    // Wake the idle monitor so a play action restarts the waveform without
+    // waiting out the idle poll cycle.
+    MONITOR_WAKE.fetch_add(1, Ordering::Relaxed);
     std::thread::spawn(move || {
         unsafe {
             let _ = CoInitializeEx(None, COINIT_MULTITHREADED);

@@ -130,6 +130,9 @@ fn start_background_services(app_handle: &AppHandle, window: &WebviewWindow, hwn
     // Keeps the Windows taskbar hidden whenever Explorer re-shows it.
     shell::start_taskbar_monitor();
     app_handle.state::<RendererState>().set_emitter(app_handle.clone());
+    // The shared hover system's native side (shell::hover) emits from the
+    // hit-test loop thread and needs the app handle to reach the webview.
+    shell::hover::set_app(app_handle.clone());
     eprintln!("[boot] starting hit test loop");
     spawn_hit_test_loop(window.clone(), app_handle.clone());
     shell::start_media_monitor(app_handle.clone());

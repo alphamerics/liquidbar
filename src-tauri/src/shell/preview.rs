@@ -1,38 +1,38 @@
-//! Live taskbar hover previews, backed by DWM thumbnails.
+//! Live taskbar hover previews, rendered by our own GPU pipeline.
 //!
 //! A small top-level popup window is placed over the webview's preview image
-//! area and hosts a DWM thumbnail of the target app window. The popup is
-//! borderless, never activates, and stays out of alt-tab; DWM composites the
-//! thumbnail live with zero per-frame work. The popup reports its own mouse
+//! area and shows a live capture of the target app window (the GPU-rendered
+//! rounded thumbnail surface from `liquid_glass`). The popup is borderless,
+//! never activates, and stays out of alt-tab. The popup reports its own mouse
 //! hover back to the webview (the image area sits above it, so the webview
 //! cannot see the cursor there) and forwards clicks as window activation.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
 use std::sync::{Mutex, OnceLock};
+
+use liquid_glass::ThumbnailSurface;
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::{
     Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM},
     Graphics::{
         Dwm::{
-            DwmRegisterThumbnail, DwmSetWindowAttribute, DwmUnregisterThumbnail,
-            DwmUpdateThumbnailProperties, DWMNCRENDERINGPOLICY, DWMNCRP_DISABLED,
-            DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND,
-            DWM_THUMBNAIL_PROPERTIES, DWM_TNP_OPACITY, DWM_TNP_RECTDESTINATION, DWM_TNP_RECTSOURCE,
-            DWM_TNP_SOURCECLIENTAREAONLY, DWM_TNP_VISIBLE, DWM_WINDOW_CORNER_PREFERENCE,
+            DwmSetWindowAttribute, DWMNCRENDERINGPOLICY, DWMNCRP_DISABLED,
+            DWMWA_NCRENDERING_POLICY, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND,
+            DWM_WINDOW_CORNER_PREFERENCE,
         },
-        Gdi::{BeginPaint, CreateRoundRectRgn, EndPaint, SetWindowRgn, PAINTSTRUCT},
+        Gdi::{BeginPaint, EndPaint, PAINTSTRUCT},
     },
     System::LibraryLoader::GetModuleHandleW,
     UI::{
         Controls::WM_MOUSELEAVE,
         Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT},
         WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, GetClientRect, GetWindowLongW, GetWindowRect,
-            RegisterClassW, SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowLongW,
-            SetWindowPos, ShowWindow, CS_HREDRAW, CS_VREDRAW, GWL_EXSTYLE, HMENU, HTTRANSPARENT,
-            HWND_TOPMOST, LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-            SW_HIDE, WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT,
+            CreateWindowExW, DefWindowProcW, GetWindowLongW, GetWindowRect, RegisterClassW,
+            SetWindowDisplayAffinity, SetLayeredWindowAttributes, SetWindowLongW, SetWindowPos,
+            ShowWindow, CS_HREDRAW, CS_VREDRAW, GWL_EXSTYLE, HMENU, HTTRANSPARENT, HWND_TOPMOST,
+            LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
+            WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT,
             WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
             WS_EX_TRANSPARENT, WS_POPUP,
         },
@@ -64,9 +64,7 @@ pub fn restack(overlay: isize) -> Result<(), String> {
 
 /// One queued preview update: which window to show, and where (the overlay-
 /// relative image-area rect in physical pixels), plus the thumbnail's corner
-/// radius (physical px) applied via the window region — layered windows clip
-/// DWM thumbnails to their region, so the preview's corners can match the
-/// glass box exactly.
+/// radius (physical px), drawn by the SDF mask in the thumbnail shader.
 #[derive(Clone, Copy)]
 struct PreviewRequest {
     target: isize,
@@ -76,8 +74,11 @@ struct PreviewRequest {
 
 static PREVIEW_REQUEST: Mutex<Option<PreviewRequest>> = Mutex::new(None);
 static PREVIEW_HWND: AtomicIsize = AtomicIsize::new(0);
-static THUMBNAIL: AtomicUsize = AtomicUsize::new(0);
-static REGISTERED_TARGET: AtomicIsize = AtomicIsize::new(0);
+/// The persistent GPU thumbnail surface bound to the popup; created lazily
+/// with the popup and reused across previews (the swap chain resizes with
+/// the popup, the capture retargets with the hovered app).
+static THUMB: Mutex<Option<ThumbnailSurface>> = Mutex::new(None);
+static CURRENT_TARGET: AtomicIsize = AtomicIsize::new(0);
 static MOUSE_INSIDE: AtomicBool = AtomicBool::new(false);
 static CLASS_REGISTERED: OnceLock<()> = OnceLock::new();
 static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
@@ -139,88 +140,44 @@ unsafe fn show(overlay: isize, request: PreviewRequest) -> Result<(), String> {
     )
     .map_err(|error| format!("Could not place the preview window: {error}"))?;
 
-    let target = HWND(request.target as *mut _);
-    if REGISTERED_TARGET.load(Ordering::Relaxed) != request.target {
-        let previous = THUMBNAIL.swap(0, Ordering::Relaxed);
-        if previous != 0 {
-            let _ = DwmUnregisterThumbnail(previous as isize);
+    CURRENT_TARGET.store(request.target, Ordering::Relaxed);
+
+    // The GPU thumbnail surface is persistent; retarget it (which restarts
+    // the capture when the source changed), restyle it and size it to the
+    // fresh rect. Its shader owns the corner radius, so any value works.
+    let mut slot = THUMB.lock().expect("preview thumbnail lock poisoned");
+    let surface = if let Some(surface) = slot.as_ref() {
+        surface
+    } else {
+        match ThumbnailSurface::create(preview.0 as isize) {
+            Ok(surface) => slot.get_or_insert(surface),
+            Err(error) => {
+                eprintln!("Glassbar preview thumbnail failed to create: {error}");
+                return Ok(());
+            }
         }
-        let handle = DwmRegisterThumbnail(preview, target)
-            .map_err(|error| format!("Could not register the preview thumbnail: {error}"))?;
-        THUMBNAIL.store(handle as usize, Ordering::Relaxed);
-        REGISTERED_TARGET.store(request.target, Ordering::Relaxed);
-    }
-
-    let handle = THUMBNAIL.load(Ordering::Relaxed);
-    if handle == 0 {
-        return Ok(());
-    }
-    let mut destination = RECT::default();
-    GetClientRect(preview, &mut destination)
-        .map_err(|error| format!("Could not measure the preview window: {error}"))?;
-    let destination_width = (destination.right - destination.left).max(1);
-    let destination_height = (destination.bottom - destination.top).max(1);
-    let mut source = RECT::default();
-    let _ = GetClientRect(target, &mut source);
-    let properties = DWM_THUMBNAIL_PROPERTIES {
-        dwFlags: DWM_TNP_RECTDESTINATION
-            | DWM_TNP_RECTSOURCE
-            | DWM_TNP_VISIBLE
-            | DWM_TNP_OPACITY
-            | DWM_TNP_SOURCECLIENTAREAONLY,
-        fVisible: true.into(),
-        fSourceClientAreaOnly: true.into(),
-        opacity: 255,
-        rcDestination: destination,
-        rcSource: crop_to_aspect(source, destination_width as f32 / destination_height as f32),
-        ..Default::default()
     };
-    DwmUpdateThumbnailProperties(handle as isize, &properties)
-        .map_err(|error| format!("Could not update the preview thumbnail: {error}"))?;
-
-    // Layered windows clip their DWM thumbnails to the window region, so the
-    // rounded region gives the thumbnail the exact corner radius requested
-    // (glass corner radius + the popup's padding). The region is applied
-    // after the thumbnail properties so the recomposite cannot race past it,
-    // and with a redraw so DWM re-evaluates the shape immediately.
-    let width = request.rect[2].max(1);
-    let height = request.rect[3].max(1);
-    let radius = request.corner_radius.clamp(0, width / 2).max(1);
-    let region = CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2);
-    if SetWindowRgn(preview, region, true) == 0 {
-        eprintln!("Glassbar preview region failed (falling back to DWM rounding)");
+    if let Err(error) = surface.set_source(request.target) {
+        eprintln!("Glassbar preview thumbnail retarget failed: {error}");
     }
+    surface.set_radius(request.corner_radius.max(0) as f32);
+    if let Err(error) = surface.sync_window_size() {
+        eprintln!("Glassbar preview thumbnail resize failed: {error}");
+    }
+    surface.set_visible(true);
     Ok(())
 }
 
-/// Crops the source rect around its center so the thumbnail fills the
-/// destination box without stretching.
-fn crop_to_aspect(source: RECT, aspect: f32) -> RECT {
-    let width = (source.right - source.left).max(1);
-    let height = (source.bottom - source.top).max(1);
-    let (crop_width, crop_height) = if width as f32 / height as f32 > aspect {
-        ((height as f32 * aspect).round() as i32, height)
-    } else {
-        (width, (width as f32 / aspect).round() as i32)
-    };
-    let left = source.left + (width - crop_width) / 2;
-    let top = source.top + (height - crop_height) / 2;
-    RECT {
-        left,
-        top,
-        right: left + crop_width,
-        bottom: top + crop_height,
-    }
-}
-
 fn hide() {
-    let handle = THUMBNAIL.swap(0, Ordering::Relaxed);
-    if handle != 0 {
-        unsafe {
-            let _ = DwmUnregisterThumbnail(handle as isize);
+    if let Ok(slot) = THUMB.lock() {
+        if let Some(surface) = slot.as_ref() {
+            surface.set_visible(false);
+            if let Err(error) = surface.set_source(0) {
+                eprintln!("Glassbar preview thumbnail release failed: {error}");
+            }
         }
     }
-    REGISTERED_TARGET.store(0, Ordering::Relaxed);
+    CURRENT_TARGET.store(0, Ordering::Relaxed);
     let hwnd = PREVIEW_HWND.load(Ordering::Relaxed);
     if hwnd != 0 {
         unsafe {
@@ -267,12 +224,10 @@ unsafe fn ensure_window() -> Result<HWND, String> {
         (style | WS_EX_LAYERED.0 | WS_EX_TRANSPARENT.0) as i32,
     );
     let _ = SetLayeredWindowAttributes(hwnd, None, 255, LWA_ALPHA);
-    // Base rounding comes from the window region (set per show) for the
-    // exact glass-matching radius; on systems where a DWM thumbnail ignores
-    // the region, the Windows 11 corner preference still rounds the whole
-    // window composition (at the system radius) so the preview is never
-    // left with square corners.
-    let preference: DWM_WINDOW_CORNER_PREFERENCE = DWMWCP_ROUND;
+    // The thumbnail surface draws the corners itself (SDF mask at the exact
+    // requested radius): the Windows 11 system corner rounding must NOT also
+    // round this popup, or the composition would double-clip the content.
+    let preference: DWM_WINDOW_CORNER_PREFERENCE = DWMWCP_DONOTROUND;
     let _ = DwmSetWindowAttribute(
         hwnd,
         DWMWA_WINDOW_CORNER_PREFERENCE,
@@ -327,6 +282,17 @@ fn emit_hover(hovering: bool) {
     }
 }
 
+/// Clears a stale popup hover latch without an event. Windows fires
+/// `WM_MOUSELEAVE` only from mouse input, never from a window moving out
+/// from under a parked cursor, so a repositioned popup can leave the latch
+/// stuck true. The shared `hover-blur` edge (`shell::hover::supervise`) is
+/// the webview-facing signal for that same crossing — it routes into the
+/// same webview hover system — so this reset deliberately never emits a
+/// second, duplicate leave.
+pub fn reset_hover_latch() {
+    MOUSE_INSIDE.store(false, Ordering::Relaxed);
+}
+
 unsafe extern "system" fn preview_wndproc(
     hwnd: HWND,
     message: u32,
@@ -359,7 +325,7 @@ unsafe extern "system" fn preview_wndproc(
         }
         // Clicking the thumbnail activates the app being previewed.
         WM_LBUTTONUP => {
-            let target = REGISTERED_TARGET.load(Ordering::Relaxed);
+            let target = CURRENT_TARGET.load(Ordering::Relaxed);
             if target != 0 {
                 let _ = crate::shell::activate(target, false);
             }

@@ -10,6 +10,7 @@ import {
   type MediaSnapshot,
   type ShellSnapshot,
 } from "./lib/shell";
+
 import "./App.css";
 
 const refreshIntervalMs = 2_000;
@@ -35,12 +36,10 @@ function App() {
 function Glassbar() {
   const [shell, setShell] = useState<ShellSnapshot | null>(null);
   const [media, setMedia] = useState<MediaSnapshot | null>(null);
-  const [mediaLevels, setMediaLevels] = useState<number[]>([]);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   const refresh = useCallback(async () => {
     setShell(await getShellSnapshot());
-    setMedia(await getMediaSnapshot());
   }, []);
 
   useEffect(() => {
@@ -49,19 +48,21 @@ function Glassbar() {
     return () => window.clearInterval(interval);
   }, [refresh]);
 
+  // Media is event-driven: the native monitor publishes track/play state
+  // changes itself (`media-changed`), so no polling of media runs here.
   useEffect(() => {
-    let unlisteners: Array<() => void> = [];
-    void import("@tauri-apps/api/event").then(({ listen }) => {
-      void listen<number[]>("media-levels", (event) => {
-        if (Array.isArray(event.payload) && event.payload.length === 5) {
-          setMediaLevels(event.payload);
-        }
-      }).then((unlisten) => unlisteners.push(unlisten));
-      void listen<MediaSnapshot>("media-changed", (event) => {
-        setMedia(event.payload);
-      }).then((unlisten) => unlisteners.push(unlisten));
-    });
-    return () => unlisteners.forEach((unlisten) => unlisten());
+    void getMediaSnapshot().then((snapshot) => setMedia(snapshot));
+    let unlisten: (() => void) | undefined;
+    void import("@tauri-apps/api/event")
+      .then(({ listen }) =>
+        listen<MediaSnapshot>("media-changed", (event) => {
+          setMedia(event.payload);
+        }),
+      )
+      .then((fn) => {
+        unlisten = fn;
+      });
+    return () => unlisten?.();
   }, []);
 
   const handleSettingsOpenChange = useCallback((open: boolean) => {
@@ -116,24 +117,6 @@ function Glassbar() {
 
   return (
     <>
-      <svg className="glass-filter-definitions" aria-hidden="true">
-        <filter id="glass-surface-displacement">
-          <feTurbulence
-            type="fractalNoise"
-            baseFrequency="0.012 0.18"
-            numOctaves="2"
-            seed="8"
-            result="surfaceNoise"
-          />
-          <feDisplacementMap
-            in="SourceGraphic"
-            in2="surfaceNoise"
-            scale="-3.5"
-            xChannelSelector="R"
-            yChannelSelector="G"
-          />
-        </filter>
-      </svg>
       <ContextMenu
         onOpenChange={handleContextMenuOpenChange}
         onRefresh={handleRefresh}
@@ -142,7 +125,6 @@ function Glassbar() {
         <Taskbar
           snapshot={shell}
           media={media}
-          mediaLevels={mediaLevels}
           isSettingsOpen={isSettingsOpen}
           onSettingsOpenChange={handleSettingsOpenChange}
           onPinnedChange={() => void refresh()}

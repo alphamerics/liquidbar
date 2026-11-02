@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   activateWindow,
   closeApp,
@@ -8,6 +8,7 @@ import {
 import { LiquidDropdown, type LiquidDropdownItem } from "glass-ui";
 import { AppPreview } from "./AppPreview";
 import { AppIcon } from "./AppIcon";
+import { useHoverPanel } from "./hoverPanel";
 
 /** A running window of the app, for the right-click dropdown's window list. */
 export interface AppWindowInstance {
@@ -18,9 +19,6 @@ export interface AppWindowInstance {
 }
 
 const appColors = ["#2779d8", "#23a5f2", "#1ed760", "#f6c343", "#8d75e8", "#ef6b73"];
-
-const HOVER_DELAY_MS = 750;
-const CLOSE_GRACE_MS = 350;
 
 interface AppTaskbarButtonProps {
   app: TaskbarApp;
@@ -42,48 +40,26 @@ export function AppTaskbarButton({
   onTogglePin,
 }: AppTaskbarButtonProps) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [preview, setPreview] = useState<DOMRect | null>(null);
+  // The hover-open preview runs on the taskbar's shared hover system
+  // (hoverPanel.ts): the hover dwell opens it, leaving the button (or the
+  // preview's glass frame) arms the grace, and hovering the preview cancels
+  // it again — identical to the media hover card's behavior.
+  const panel = useHoverPanel();
   const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const hoverTimer = useRef(0);
-  const closeTimer = useRef(0);
   // Pinned placeholders (closed apps) have no window to preview or close.
   const isRunning = app.id !== -1;
-
-  useEffect(
-    () => () => {
-      window.clearTimeout(hoverTimer.current);
-      window.clearTimeout(closeTimer.current);
-    },
-    [],
-  );
-
-  const clearHoverTimer = () => window.clearTimeout(hoverTimer.current);
-  const clearCloseTimer = () => window.clearTimeout(closeTimer.current);
 
   const schedulePreview = () => {
     if (!isRunning) {
       return;
     }
-    clearHoverTimer();
-    hoverTimer.current = window.setTimeout(() => {
-      const rect = buttonRef.current?.getBoundingClientRect();
-      if (rect) {
-        setPreview(rect);
-      }
-    }, HOVER_DELAY_MS);
+    // Counting the dwell from the enter: the rect is captured at fire time
+    // (the scheduleOpen contract) so a mid-dwell reflow doesn't anchor the
+    // preview to a stale spot.
+    panel.scheduleOpen(() => buttonRef.current?.getBoundingClientRect() ?? null);
   };
 
-  const scheduleClose = () => {
-    clearHoverTimer();
-    clearCloseTimer();
-    closeTimer.current = window.setTimeout(() => setPreview(null), CLOSE_GRACE_MS);
-  };
-
-  const hidePreview = () => {
-    clearHoverTimer();
-    clearCloseTimer();
-    setPreview(null);
-  };
+  const hidePreview = () => panel.close();
 
   const activate = () => {
     if (launchPath) {
@@ -164,10 +140,10 @@ export function AppTaskbarButton({
               if (event.pointerType === "touch") {
                 return;
               }
-              clearCloseTimer();
+              panel.cancelClose();
               schedulePreview();
             }}
-            onPointerLeave={scheduleClose}
+            onPointerLeave={panel.scheduleClose}
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
@@ -183,11 +159,11 @@ export function AppTaskbarButton({
           </button>
         }
       />
-      {preview && (
+      {panel.anchor && (
         <AppPreview
           app={app}
-          anchor={preview}
-          onHover={(hovering) => (hovering ? clearCloseTimer() : scheduleClose())}
+          anchor={panel.anchor}
+          onHover={panel.onPopupHover}
         />
       )}
     </>

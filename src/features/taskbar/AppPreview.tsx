@@ -6,6 +6,9 @@ import { AppIcon } from "./AppIcon";
 
 const PREVIEW_WIDTH = 264;
 const VIEWPORT_MARGIN = 12;
+// The glass frame's corner radius in physical px (the value handed to
+// useLiquidGlassSurface is not DPI-scaled, unlike the surface's rect).
+const GLASS_RADIUS_PX = 20;
 
 interface AppPreviewProps {
   app: TaskbarApp;
@@ -30,7 +33,7 @@ export function AppPreview({ app, anchor, onHover }: AppPreviewProps) {
   useLiquidGlassSurface(
     true,
     `[data-app-preview="${previewId}"]`,
-    20,
+    GLASS_RADIUS_PX,
     `preview${previewId}`,
   );
 
@@ -60,14 +63,20 @@ export function AppPreview({ app, anchor, onHover }: AppPreviewProps) {
         return;
       }
       const scale = window.devicePixelRatio || 1;
+      // Nested border-radius rule, in physical px: the capture's corner
+      // radius must be the glass frame's own rounding minus the popup's
+      // padding inset, so the curves stay concentric. The glass frame's
+      // radius is DPI-unscaled (see useLiquidGlassSurface), while the
+      // padding is CSS px and is scaled here.
+      const container = node.parentElement;
+      const containerStyle = container ? getComputedStyle(container) : null;
+      const paddingPx = (parseFloat(containerStyle?.paddingLeft ?? "") || 0) * scale;
       void setWindowPreview(app.id, {
         x: rect.left * scale,
         y: rect.top * scale,
         width: rect.width * scale,
         height: rect.height * scale,
-        // The thumbnail's corner radius matches the glass box's radius plus
-        // the padding, scaled to physical pixels.
-        radius: (20 + 7) * scale,
+        radius: Math.max(GLASS_RADIUS_PX - paddingPx, 0),
       });
     };
     const pushSettled = () => {

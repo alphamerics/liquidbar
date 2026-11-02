@@ -94,10 +94,18 @@ export type GadgetSettings = {
 export interface GlassbarSettings {
   reserveSpace: boolean;
   refractionStrength: number;
+  /** The liquid glass performance preset: "auto" | "high" | "balanced" |
+   * "efficiency". Auto picks the tier from the GPU class and battery. */
+  quality: string;
   blurRadius: number;
   blurSamples: number;
   tintStrength: number;
   tintColor: [number, number, number];
+  /** Adaptive luminance-aware blend (vibrancy): per-pixel tint strength
+   * driven by the backdrop's luminance contrast (0 = uniform tint). */
+  vibrancy: number;
+  /** Chroma boost applied to the backdrop before the tint blend (0..1). */
+  vibrancySaturation: number;
   edgeBand: number;
   chromaticOffset: number;
   chromaticBlend: number;
