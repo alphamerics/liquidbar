@@ -764,6 +764,7 @@ export function Taskbar({
       drag.slotLeft = drag.element.offsetLeft;
       drag.slotTop = drag.element.offsetTop;
       drag.pickupStart = performance.now();
+      lastDragActivityRef.current = drag.pickupStart;
       drag.element.classList.add("app-dragging");
       document.body.classList.add("app-drag-active");
       startPickupGrow(drag);
@@ -805,6 +806,9 @@ export function Taskbar({
     }
     // The click that follows the pointer-up must not activate the app.
     suppressClickRef.current = true;
+    // Keep the FLIP window open across the settle spring and the snapshot
+    // that materializes a cross-side drop's preview.
+    lastDragActivityRef.current = performance.now();
     const { element, offsetX, offsetY, scale, target } = drag;
     if (target.side === drag.side) {
       // Same-section drop: the preview slot is the final slot, so the button
@@ -897,19 +901,30 @@ export function Taskbar({
     event.stopPropagation();
   };
 
-  // Layout-synced motion: every commit (re-order previews, drops, snapshot
-  // refreshes) FLIP-animates the buttons that changed slots — the "swipe"
+  // Drag-synced motion: while a drag is in flight (or right after a drop),
+  // every commit FLIP-animates the buttons that changed slots — the "swipe"
   // as the dragged app moves past its neighbors — and compensates the
   // dragged button's ghost offset for its own slot movement so it keeps
-  // tracking the pointer.
+  // tracking the pointer. Commits without a drag (pill resizes, snapshot
+  // refreshes) only refresh the positions map, so buttons snap instead of
+  // sliding.
   const previousPositionsRef = useRef<Map<string, { left: number; top: number }>>(new Map());
   const flipRafRef = useRef(0);
+  const lastDragActivityRef = useRef(0);
   useLayoutEffect(() => {
     const center = centerRef.current;
     if (!center) {
       return;
     }
     const drag = dragRef.current;
+    // FLIP-animate shifts only while a drag is in flight (or its settle
+    // spring is still running). Every other commit that moves the buttons —
+    // pill recentering when a media title changes the width, snapshot
+    // refreshes — must snap: animating it here is the "apps slide in ~1s
+    // after a resize" artifact.
+    const dragActive =
+      (drag?.moved ?? false) ||
+      performance.now() - lastDragActivityRef.current < SETTLE_DURATION_MS + 60;
     const buttons = Array.from(center.querySelectorAll<HTMLElement>("[data-app-entry]"));
     const shifted: HTMLElement[] = [];
     const positions = new Map<string, { left: number; top: number }>();
@@ -918,6 +933,9 @@ export function Taskbar({
       const left = el.offsetLeft;
       const top = el.offsetTop;
       positions.set(name, { left, top });
+      if (!dragActive) {
+        continue;
+      }
       const previous = previousPositionsRef.current.get(name);
       if (!previous || el === drag?.element) {
         continue;
