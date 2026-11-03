@@ -6,9 +6,10 @@
 
 mod commands;
 mod hit_test_loop;
+mod hotkey;
 mod renderer;
-mod shell;
 mod settings;
+mod shell;
 mod wheel_volume;
 
 pub use settings::GlassbarSettings;
@@ -43,6 +44,15 @@ fn apply_startup_state(app: &App) {
     *app.state::<Mutex<GlassbarSettings>>()
         .lock()
         .expect("settings lock poisoned") = shell::load_settings(app.handle());
+    // The pill's saved height must be live before the AppBar registers: the
+    // reservation strip, the overlay window and the glass anchor all derive
+    // from it.
+    shell::set_taskbar_height_px(
+        app.state::<Mutex<GlassbarSettings>>()
+            .lock()
+            .expect("settings lock poisoned")
+            .taskbar_height as i32,
+    );
     // A "sleep" focus window armed before a shutdown must not leave
     // Do not disturb stuck on past 8:00 AM: reconcile it on boot.
     shell::dnd_boot_check(app.handle());
@@ -119,7 +129,10 @@ fn position_taskbar(app: &App, hwnd: isize) -> Result<(), Box<dyn std::error::Er
 /// Attaches the GPU glass renderer to the overlay. A failure is logged and
 /// swallowed: the web UI keeps working without the glass, degraded.
 fn attach_renderer(app: &App, hwnd: isize) {
-    if let Err(error) = app.state::<RendererState>().attach_to_overlay(HWND(hwnd as *mut _)) {
+    if let Err(error) = app
+        .state::<RendererState>()
+        .attach_to_overlay(HWND(hwnd as *mut _))
+    {
         eprintln!("Glassbar GPU renderer is unavailable: {error}");
     }
 }
@@ -129,7 +142,9 @@ fn attach_renderer(app: &App, hwnd: isize) {
 fn start_background_services(app_handle: &AppHandle, window: &WebviewWindow, hwnd: isize) {
     // Keeps the Windows taskbar hidden whenever Explorer re-shows it.
     shell::start_taskbar_monitor();
-    app_handle.state::<RendererState>().set_emitter(app_handle.clone());
+    app_handle
+        .state::<RendererState>()
+        .set_emitter(app_handle.clone());
     // The shared hover system's native side (shell::hover) emits from the
     // hit-test loop thread and needs the app handle to reach the webview.
     shell::hover::set_app(app_handle.clone());
@@ -138,6 +153,8 @@ fn start_background_services(app_handle: &AppHandle, window: &WebviewWindow, hwn
     shell::start_media_monitor(app_handle.clone());
     shell::start_foreground_tracker(hwnd);
     wheel_volume::spawn_wheel_volume(app_handle.clone(), hwnd);
+    // The "completely disable the taskbar" global toggle hotkey.
+    hotkey::spawn_hotkey_service(app_handle.clone());
 }
 
 /// Re-syncs the GPU surface bounds whenever the overlay window moves or
@@ -228,6 +245,7 @@ pub fn run() {
             commands::set_window_preview,
             commands::set_reserve_space,
             commands::set_taskbar_content_width,
+            commands::set_taskbar_height,
             commands::get_settings,
             commands::set_settings,
             commands::reset_settings,

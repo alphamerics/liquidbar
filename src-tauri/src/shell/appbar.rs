@@ -20,7 +20,27 @@ use windows::Win32::{
     },
 };
 
-pub const TASKBAR_HEIGHT_PX: i32 = 68;
+/// The taskbar pill's height (physical pixels): user-resizable live by
+/// dragging the pill's top edge (macOS-dock style), persisted as the
+/// `taskbarHeight` setting. 68 px is the classic default.
+pub const TASKBAR_HEIGHT_DEFAULT_PX: i32 = 68;
+static TASKBAR_HEIGHT: std::sync::atomic::AtomicI32 =
+    std::sync::atomic::AtomicI32::new(TASKBAR_HEIGHT_DEFAULT_PX);
+
+/// The live taskbar pill height (physical pixels).
+pub fn taskbar_height_px() -> i32 {
+    TASKBAR_HEIGHT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Applies a new pill height for every consumer (AppBar reservation, overlay
+/// window height, glass anchor, hit-testing bands) to derive from.
+pub fn set_taskbar_height_px(height_px: i32) {
+    TASKBAR_HEIGHT.store(
+        height_px.max(1),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 pub const TASKBAR_FLOAT_MARGIN_PX: i32 = 8;
 pub const MENU_SURFACE_HEIGHT_PX: i32 = 480;
 /// The pill grows to fit its content, but must never reach the full monitor:
@@ -30,8 +50,11 @@ pub const TASKBAR_EDGE_MARGIN_PX: i32 = 48;
 pub const TASKBAR_MIN_WIDTH_PX: i32 = 220;
 /// The overlay window is permanently tall so menus can render above the
 /// pill without resizing (which would flicker); the glass only covers the
-/// bottom pill strip.
-pub const OVERLAY_HEIGHT_PX: i32 = TASKBAR_HEIGHT_PX + MENU_SURFACE_HEIGHT_PX;
+/// bottom pill strip. The pill's height is user-resizable, so the overlay
+/// grows with it.
+pub fn overlay_height_px() -> i32 {
+    taskbar_height_px() + MENU_SURFACE_HEIGHT_PX
+}
 const OVERLAY_SUBCLASS_ID: usize = 1;
 
 /// tao keeps WS_CAPTION in the overlay's style even though its WM_NCCALCSIZE
@@ -109,7 +132,7 @@ pub fn register(hwnd: isize, desired_width_px: i32) -> Result<(), String> {
         data.uEdge = ABE_BOTTOM;
         data.rc = RECT {
             left: taskbar_left,
-            top: screen_height - TASKBAR_HEIGHT_PX - TASKBAR_FLOAT_MARGIN_PX,
+            top: screen_height - taskbar_height_px() - TASKBAR_FLOAT_MARGIN_PX,
             right: taskbar_left + taskbar_width,
             bottom: screen_height,
         };
@@ -126,9 +149,9 @@ pub fn register(hwnd: isize, desired_width_px: i32) -> Result<(), String> {
             data.hWnd,
             HWND_TOPMOST,
             data.rc.left,
-            overlay_bottom - OVERLAY_HEIGHT_PX,
+            overlay_bottom - overlay_height_px(),
             data.rc.right - data.rc.left,
-            OVERLAY_HEIGHT_PX,
+            overlay_height_px(),
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )
         .map_err(|error| format!("Could not position Glassbar: {error}"))?;
@@ -189,14 +212,14 @@ pub fn reposition_unregistered(hwnd: isize, desired_width_px: i32) -> Result<(),
             overlay_bottom = screen_height - TASKBAR_FLOAT_MARGIN_PX;
             OVERLAY_BOTTOM.store(overlay_bottom, std::sync::atomic::Ordering::Relaxed);
         }
-        let top = width_change_top(HWND(hwnd as *mut _), overlay_bottom - OVERLAY_HEIGHT_PX);
+        let top = width_change_top(HWND(hwnd as *mut _), overlay_bottom - overlay_height_px());
         SetWindowPos(
             HWND(hwnd as *mut _),
             HWND_TOPMOST,
             left,
             top,
             width,
-            OVERLAY_HEIGHT_PX,
+            overlay_height_px(),
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )
         .map_err(|error| format!("Could not position Glassbar: {error}"))
@@ -241,6 +264,34 @@ unsafe fn configure_borderless_host(hwnd: HWND) -> Result<(), String> {
     .map_err(|error| format!("Could not remove Glassbar's native caption: {error}"))
 }
 
+/// The height drag's live fast path: places the overlay bottom-anchored
+/// (growing/shrinking upward) and horizontally centered with a plain
+/// SetWindowPos — NO AppBar message. `SHAppBarMessage(ABM_SETPOS)`
+/// synchronizes with the shell, and paying that round-trip on every drag
+/// step reads as stutter; the strip reservation only matters again when
+/// the drag commits, which re-snaps it through the full path.
+pub fn reposition_live(hwnd: isize, desired_width_px: i32) -> Result<(), String> {
+    unsafe {
+        let screen_width = GetSystemMetrics(SM_CXSCREEN);
+        let width = taskbar_width_px(desired_width_px);
+        let left = (screen_width - width) / 2;
+        let mut overlay_bottom = OVERLAY_BOTTOM.load(std::sync::atomic::Ordering::Relaxed);
+        if overlay_bottom == 0 {
+            overlay_bottom = GetSystemMetrics(SM_CYSCREEN) - TASKBAR_FLOAT_MARGIN_PX;
+        }
+        SetWindowPos(
+            HWND(hwnd as *mut _),
+            HWND_TOPMOST,
+            left,
+            overlay_bottom - overlay_height_px(),
+            width,
+            overlay_height_px(),
+            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        )
+        .map_err(|error| format!("Could not move Glassbar: {error}"))
+    }
+}
+
 /// Re-positions an already-registered appbar to a new width WITHOUT
 /// unregistering: ABM_REMOVE lets the real taskbar reclaim the bottom edge
 /// and the shell then shoves our window above it, permanently lifting the
@@ -260,7 +311,7 @@ pub fn reposition(hwnd: isize, desired_width_px: i32) -> Result<(), String> {
         let taskbar_left = (screen_width - taskbar_width) / 2;
         data.rc = RECT {
             left: taskbar_left,
-            top: screen_height - TASKBAR_HEIGHT_PX - TASKBAR_FLOAT_MARGIN_PX,
+            top: screen_height - taskbar_height_px() - TASKBAR_FLOAT_MARGIN_PX,
             right: taskbar_left + taskbar_width,
             bottom: screen_height,
         };
@@ -270,14 +321,14 @@ pub fn reposition(hwnd: isize, desired_width_px: i32) -> Result<(), String> {
             overlay_bottom = screen_height - TASKBAR_FLOAT_MARGIN_PX;
             OVERLAY_BOTTOM.store(overlay_bottom, std::sync::atomic::Ordering::Relaxed);
         }
-        let top = width_change_top(data.hWnd, overlay_bottom - OVERLAY_HEIGHT_PX);
+        let top = width_change_top(data.hWnd, overlay_bottom - overlay_height_px());
         SetWindowPos(
             data.hWnd,
             HWND_TOPMOST,
             data.rc.left,
             top,
             data.rc.right - data.rc.left,
-            OVERLAY_HEIGHT_PX,
+            overlay_height_px(),
             SWP_NOACTIVATE | SWP_SHOWWINDOW,
         )
         .map_err(|error| format!("Could not reposition Glassbar: {error}"))?;

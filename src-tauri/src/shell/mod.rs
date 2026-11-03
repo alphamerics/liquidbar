@@ -21,10 +21,6 @@ mod wifi;
 mod windows;
 
 pub use airplane::set_airplane_mode;
-pub use dnd::{
-    boot_check as dnd_boot_check, dnd_enabled, dnd_schedule, enable_dnd_sleep, save_dnd_schedule,
-    set_dnd,
-};
 pub use audio::{
     app_mix as audio_app_mix, master_snapshot as audio_master,
     set_app_volume as set_audio_app_volume, set_master_muted as set_audio_muted,
@@ -35,11 +31,15 @@ pub use bluetooth::{
     devices as bluetooth_devices, pair as bluetooth_pair, unpair as bluetooth_unpair,
     BluetoothDevice,
 };
+pub use dnd::{
+    boot_check as dnd_boot_check, dnd_enabled, dnd_schedule, enable_dnd_sleep, save_dnd_schedule,
+    set_dnd,
+};
 pub use hidden::{hidden_windows, reveal as reveal_hidden_window, HiddenWindow};
 pub use media::{
-    snapshot as media_snapshot, start_monitor as start_media_monitor,
-    thumbnail as media_thumbnail, timeline as media_timeline, transport as media_transport,
-    MediaSnapshot, TimelineInfo, TransportAction,
+    snapshot as media_snapshot, start_monitor as start_media_monitor, thumbnail as media_thumbnail,
+    timeline as media_timeline, transport as media_transport, MediaSnapshot, TimelineInfo,
+    TransportAction,
 };
 pub use night_light::{reset_night_light, set_night_light};
 pub use radios::{bluetooth_enabled, set_bluetooth_enabled, set_wifi_enabled, wifi_enabled};
@@ -272,14 +272,13 @@ fn load_persisted_settings(app: &tauri::AppHandle) -> crate::GlassbarSettings {
     let Ok(raw) = std::fs::read_to_string(&path) else {
         return crate::GlassbarSettings::default();
     };
-    let mut settings: crate::GlassbarSettings =
-        match serde_json::from_str(&raw) {
-            Ok(settings) => settings,
-            Err(error) => {
-                eprintln!("Could not parse {}: {error}", path.display());
-                return crate::GlassbarSettings::default();
-            }
-        };
+    let mut settings: crate::GlassbarSettings = match serde_json::from_str(&raw) {
+        Ok(settings) => settings,
+        Err(error) => {
+            eprintln!("Could not parse {}: {error}", path.display());
+            return crate::GlassbarSettings::default();
+        }
+    };
     if crate::settings::upgrade_legacy_cc_layout(&mut settings) {
         save_settings(app, &settings);
     }
@@ -345,7 +344,10 @@ fn data_file(app: &tauri::AppHandle, name: &str) -> Option<std::path::PathBuf> {
     Some(dir.join(name))
 }
 
-pub use appbar::{overlay_bottom_y, OVERLAY_HEIGHT_PX, TASKBAR_HEIGHT_PX};
+pub use appbar::{
+    overlay_bottom_y, overlay_height_px, reposition_live, set_taskbar_height_px,
+    taskbar_height_px, TASKBAR_HEIGHT_DEFAULT_PX,
+};
 pub use windows::cursor_visible;
 pub use windows::foreground_cover;
 pub use windows::start_foreground_tracker;

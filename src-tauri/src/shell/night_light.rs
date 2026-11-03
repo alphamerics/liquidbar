@@ -40,8 +40,11 @@ unsafe extern "system" fn collect_monitor(
     // machines would leave every other display untouched.
     let mut info = MONITORINFOEXW::default();
     info.monitorInfo.cbSize = std::mem::size_of::<MONITORINFOEXW>() as u32;
-    let name = if GetMonitorInfoW(monitor, &mut info as *mut MONITORINFOEXW as *mut MONITORINFO)
-        .as_bool()
+    let name = if GetMonitorInfoW(
+        monitor,
+        &mut info as *mut MONITORINFOEXW as *mut MONITORINFO,
+    )
+    .as_bool()
     {
         let len = info
             .szDevice
@@ -56,7 +59,12 @@ unsafe extern "system" fn collect_monitor(
     let dc = if name.is_empty() {
         CreateDCW(w!("DISPLAY"), None, None, None)
     } else {
-        CreateDCW(w!("DISPLAY"), PCWSTR::from_raw(info.szDevice.as_ptr()), None, None)
+        CreateDCW(
+            w!("DISPLAY"),
+            PCWSTR::from_raw(info.szDevice.as_ptr()),
+            None,
+            None,
+        )
     };
     if !dc.is_invalid() {
         dcs.push((name, dc));

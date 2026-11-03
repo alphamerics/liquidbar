@@ -34,8 +34,8 @@ pub fn battery_snapshot() -> BatterySnapshot {
     }
     // 128 = no system battery; 255 = unknown state.
     let has_battery = status.BatteryFlag != 128 && status.BatteryFlag != 255;
-    let percent = (status.BatteryLifePercent != 255 && has_battery)
-        .then_some(status.BatteryLifePercent);
+    let percent =
+        (status.BatteryLifePercent != 255 && has_battery).then_some(status.BatteryLifePercent);
     BatterySnapshot {
         has_battery,
         percent,
@@ -43,7 +43,6 @@ pub fn battery_snapshot() -> BatterySnapshot {
         ac_connected: status.ACLineStatus == 1,
         // 0xFFFFFFFF = the estimated runtime is unknown (common while
         // charging or right after boot).
-        life_seconds: (status.BatteryLifeTime != u32::MAX)
-            .then_some(status.BatteryLifeTime),
+        life_seconds: (status.BatteryLifeTime != u32::MAX).then_some(status.BatteryLifeTime),
     }
 }

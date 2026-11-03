@@ -29,12 +29,12 @@ use windows::Win32::{
         Input::KeyboardAndMouse::{TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT},
         WindowsAndMessaging::{
             CreateWindowExW, DefWindowProcW, GetWindowLongW, GetWindowRect, RegisterClassW,
-            SetWindowDisplayAffinity, SetLayeredWindowAttributes, SetWindowLongW, SetWindowPos,
+            SetLayeredWindowAttributes, SetWindowDisplayAffinity, SetWindowLongW, SetWindowPos,
             ShowWindow, CS_HREDRAW, CS_VREDRAW, GWL_EXSTYLE, HMENU, HTTRANSPARENT, HWND_TOPMOST,
             LWA_ALPHA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE,
-            WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT,
-            WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
-            WS_EX_TRANSPARENT, WS_POPUP,
+            WDA_EXCLUDEFROMCAPTURE, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCHITTEST, WM_PAINT, WNDCLASSW,
+            WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+            WS_POPUP,
         },
     },
 };

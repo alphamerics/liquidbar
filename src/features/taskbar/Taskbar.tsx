@@ -1,5 +1,12 @@
 import { Cog } from "lucide-react";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import { flushSync } from "react-dom";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -8,6 +15,7 @@ import {
   prewarmMenuGlass,
   setSettings,
   setTaskbarContentWidth,
+  setTaskbarHeight,
   setUiHitRects,
   unpinApp,
   type GlassbarSettings,
@@ -44,16 +52,55 @@ function useTaskbarWidthReporting(): void {
   const lastSent = useRef(-1);
   const candidate = useRef(-1);
   const send = useCallback((desired: number) => {
-    if (desired === lastSent.current) {
+    const dragActive = resizeDragActive.active;
+    const flushed = performance.now() < resizeFlushUntil.until;
+    // A pill-height change rescales the content zoom, which changes the
+    // measured width instantly while the old two-measurement gate would
+    // hold the new width back for ~500ms — the web UI would then be wider
+    // than the window (right-anchored items displaced) until the gate let
+    // the width through. During (and shortly after) a height change, apply
+    // immediately at full precision — and as a non-animated report, since
+    // springing on the rescale is the "pill keeps moving after the drag
+    // ended" artifact.
+    if (dragActive || flushed) {
+      // Sub-3px differences are measurement noise around the settled value
+      // (fractional zoom layouts, rounding): applying them churns the pill
+      // with 1px repositions — the "keeps twitching after release" effect.
+      if (Math.abs(desired - lastSent.current) < 3) {
+        return;
+      }
+      candidate.current = -1;
+      lastSent.current = desired;
+      resizeWidthPump.lastWidth = desired;
+      if (resizeMeasureOnly.active) {
+        // The height drag owns the pill's geometry right now: the demand
+        // was recorded for the drag's combined command, which applies it
+        // in the same reposition as the height.
+        return;
+      }
+      // The flush budget caps the full-precision corrections (see
+      // `resizeFlushBudget`); once spent, the quantized path below takes
+      // over and settles the pipeline for good.
+      if (dragActive || resizeFlushBudget.left > 0) {
+        if (!dragActive) {
+          resizeFlushBudget.left -= 1;
+        }
+        void setTaskbarContentWidth(desired, false);
+        return;
+      }
+    }
+    const quantized = Math.ceil(desired / 10) * 10;
+    if (quantized === lastSent.current) {
       return;
     }
-    if (desired !== candidate.current) {
-      candidate.current = desired;
+    if (quantized !== candidate.current) {
+      candidate.current = quantized;
       return;
     }
     candidate.current = -1;
-    lastSent.current = desired;
-    void setTaskbarContentWidth(desired);
+    lastSent.current = quantized;
+    resizeWidthPump.lastWidth = quantized;
+    void setTaskbarContentWidth(quantized);
   }, []);
   const push = useCallback(() => {
     const content = document.querySelector<HTMLElement>(".taskbar-content");
@@ -122,11 +169,16 @@ function useTaskbarWidthReporting(): void {
     // side, not the sum of both — that is what lets an asymmetric audio
     // gadget expand while the center stays perfectly centered.
     const required = Math.max(widths[0], widths[2]) * 2 + widths[1];
-    // The content grid's two 12px column gaps plus the shell's 16px side
-    // paddings, plus a small breathing allowance, scaled into physical
-    // pixels and quantized to 10px steps so appbar churn stays low.
+    // The measured section widths are PRE-ZOOM local units (CSS zoom does
+    // not appear in offsetWidth) — scaling them by the UI zoom maps the
+    // demand to what the content actually occupies on screen. The content
+    // grid's two 12px column gaps plus the shell's 16px side paddings plus
+    // a small breathing allowance scale along with it (they live inside the
+    // zoomed content). Quantization (to 10px steps, keeping appbar churn
+    // low) happens in `send` — the immediate height-change path must stay
+    // at full precision or the pill trails the rescaled content.
     const scale = window.devicePixelRatio || 1;
-    const desired = Math.ceil(((required + 24 + 32 + 8) * scale) / 10) * 10;
+    const desired = Math.ceil((required + 24 + 32 + 8) * uiScale() * scale);
     send(desired);
   }, [send]);
   useEffect(() => {
@@ -139,14 +191,71 @@ function useTaskbarWidthReporting(): void {
     }
     const unsubscribe = onDomMutations(push);
     const timer = window.setInterval(push, 250);
+    // Registered for the height drag's commit-time correction (see
+    // beginResizeDrag): one exact measurement of the settled content.
+    resizeWidthPump.fn = push;
     push();
     return () => {
+      resizeWidthPump.fn = null;
       observer.disconnect();
       unsubscribe();
       window.clearInterval(timer);
     };
   }, [push]);
 }
+
+/**
+ * While the pill's top-edge resize drag is in flight the whole overlay must
+ * stay interactive: the pointer rides the moving top edge, and a momentary
+ * miss (the window grows under a fast drag) must not drop the drag into
+ * click-through. The hook below widens its pushed hit rects while this is
+ * set; the drag owns the flag.
+ */
+const resizeDragActive = { active: false };
+
+/**
+ * Height changes rescale the content zoom, which changes the measured
+ * content width in the same frame — the width pipeline's anti-twitch gate
+ * (two identical measurements, 10px quantization) must step aside so the
+ * native pill follows the DOM proportionally instead of ~500ms behind.
+ * Every applied height change opens this immediate-apply window for a
+ * moment (the drag keeps it open for its whole life).
+ */
+const resizeFlushUntil = { until: 0 };
+
+/**
+ * How many full-precision width corrections the flush window may still
+ * apply. A width-dependent measurement (the demand shifts slightly with
+ * the landed window width) plus an evergreen immediate mode would chase
+ * its own tail forever — a ~6px width limit cycle observed live, once per
+ * measurement lane. The budget caps the immediate corrections after a
+ * height change; then the 10px-quantized path takes over, which is
+ * self-terminating (the quantized demand equals the sent value and the
+ * pipeline goes quiet).
+ */
+const resizeFlushBudget = { left: 0 };
+
+/**
+ * The width-reporting hook registers its measure-and-send closure here so
+ * the height drag can pump it, plus the last width the pipeline produced
+ * (physical px). During the drag the pump runs in MEASURE-ONLY mode (see
+ * `resizeMeasureOnly`): it records the exact zoomed content demand here,
+ * and the drag's combined height+width command applies it — the width and
+ * height land in the SAME native reposition, in lockstep.
+ */
+const resizeWidthPump: { fn: (() => void) | null; lastWidth: number } = {
+  fn: null,
+  lastWidth: 0,
+};
+
+/**
+ * Measure-only mode for the width pipeline: while the height drag owns the
+ * pill's geometry, `push` still measures (so the drag's combined command
+ * carries the EXACT content demand, not an estimate) but must not trigger
+ * its own reposition — a separate width reposition lands a frame after the
+ * height one, and the two would fight visibly.
+ */
+const resizeMeasureOnly = { active: false };
 
 /**
  * Keeps the native hit-test loop informed of the taskbar's interactive
@@ -158,8 +267,21 @@ function useUiHitRects(): void {
   const push = useCallback(() => {
     const scale = window.devicePixelRatio || 1;
     const rects: MenuGlassRect[] = [];
+    if (resizeDragActive.active) {
+      // The resize drag holds the whole overlay interactive so the pointer
+      // can never fall out of the webview mid-drag.
+      const body = document.body.getBoundingClientRect();
+      rects.push({
+        x: body.left * scale,
+        y: body.top * scale,
+        width: body.width * scale,
+        height: body.height * scale,
+      });
+    }
     document
-      .querySelectorAll<HTMLElement>(".taskbar-button, .cc-hit")
+      .querySelectorAll<HTMLElement>(
+        ".taskbar-button, .cc-hit, .taskbar-resize-handle",
+      )
       .forEach((node) => {
         const rect = node.getBoundingClientRect();
         if (rect.width < 1 || rect.height < 1) {
@@ -218,6 +340,108 @@ function useIconMetrics(): void {
       }
     };
   }, []);
+}
+
+/** The pill height the DOM layout is authored against (CSS px): the web UI
+ * scales proportionally with the pill around this base. */
+const TASKBAR_BASE_HEIGHT_PX = 68;
+
+/** Applies the pill height to the DOM: the shell height variable plus the
+ * proportional UI scale the content zooms by. Every applied height change
+ * also opens the width pipeline's immediate-apply window (with a small
+ * correction budget — see `resizeFlushBudget`), so the rescaled content's
+ * new width reaches the native pill promptly without evergreen immediate
+ * mode. */
+function applyTaskbarHeightVars(cssHeight: number): void {
+  const root = document.documentElement.style;
+  root.setProperty("--taskbar-height", `${cssHeight}px`);
+  root.setProperty(
+    "--taskbar-scale",
+    `${cssHeight / TASKBAR_BASE_HEIGHT_PX}`,
+  );
+  resizeFlushUntil.until = performance.now() + 800;
+  resizeFlushBudget.left = 2;
+}
+
+/** The content's current zoom scale (the `--taskbar-scale` variable). CSS
+ * zoom does NOT appear in offsetWidth/offsetLeft/scrollWidth or computed
+ * style values — they stay in pre-zoom local units — so every layout
+ * measurement that must correspond to on-screen (viewport) pixels goes
+ * through this. */
+function uiScale(): number {
+  return (
+    Number.parseFloat(
+      document.documentElement.style.getPropertyValue("--taskbar-scale"),
+    ) || 1
+  );
+}
+
+/**
+ * The taskbar pill's height (macOS-dock style, resized by dragging the
+ * pill's top edge).
+ *
+ * In the native app the overlay window is the single source of truth: it is
+ * always `pill height + menu surface` tall, so the DOM derives its height
+ * variables from the LIVE window size on every resize event. Writing the
+ * variables ahead of the native resize (per pointer step) makes the DOM
+ * lead the async native geometry and then fall behind it — the visible
+ * jitter; deriving them from the landed window size keeps the DOM, the
+ * glass and the pill in the same frame by construction.
+ *
+ * The browser preview has no native geometry, so there the saved setting
+ * drives the variables directly.
+ */
+const MENU_SURFACE_HEIGHT_PX = 480;
+
+function useTaskbarHeightVar(): { current: number } {
+  const heightRef = useRef(68);
+  // Layout effect: the first paint must already carry the landed window's
+  // height, or a saved non-default height flashes at the 68px default.
+  useLayoutEffect(() => {
+    if ("__TAURI_INTERNALS__" in window) {
+      // Only a HEIGHT change re-opens the width pipeline's immediate window
+      // (and refreshes its correction budget): every width reposition also
+      // fires a resize event, and re-arming on those kept immediate mode
+      // alive forever — the width limit cycle.
+      let lastSyncedHeight = -1;
+      const sync = () => {
+        const menuSurfaceCss = MENU_SURFACE_HEIGHT_PX / (window.devicePixelRatio || 1);
+        const cssHeight = window.innerHeight - menuSurfaceCss;
+        if (cssHeight < 24) {
+          return;
+        }
+        heightRef.current = cssHeight;
+        if (Math.abs(cssHeight - lastSyncedHeight) >= 1) {
+          lastSyncedHeight = cssHeight;
+          applyTaskbarHeightVars(cssHeight);
+        }
+      };
+      sync();
+      window.addEventListener("resize", sync);
+      return () => window.removeEventListener("resize", sync);
+    }
+    const apply = (settings: GlassbarSettings | null | undefined) => {
+      if (!settings || !Number.isFinite(settings.taskbarHeight)) {
+        return;
+      }
+      const cssHeight = settings.taskbarHeight / (window.devicePixelRatio || 1);
+      heightRef.current = cssHeight;
+      applyTaskbarHeightVars(cssHeight);
+    };
+    void getSettings().then(apply);
+    let unlisten: (() => void) | undefined;
+    void listen<GlassbarSettings>("settings-changed", (event) => {
+      apply(event.payload);
+    }).then((fn) => {
+      unlisten = fn;
+    });
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+  return heightRef;
 }
 
 /**
@@ -349,6 +573,11 @@ function useTaskbarOrder() {
 /** How far the pointer must cross a slot (or the pinned/running) boundary
  * before the preview swaps — hovering a boundary must not flip-flop. */
 const SWAP_MARGIN = 14;
+
+/** The top-edge resize drag's height bounds (CSS px), mirrored by the
+ * native command's physical-pixel clamps. */
+const TASKBAR_MIN_HEIGHT_PX = 48;
+const TASKBAR_MAX_HEIGHT_PX = 160;
 
 /** A taskbar app drag in flight: the dragged button stays in the layout flow
  * (at its preview slot, so its neighbors part around it) while its visual
@@ -503,6 +732,160 @@ export function Taskbar({
   useTaskbarWidthReporting();
   usePillResizeAnimation();
   useIconMetrics();
+  const taskbarHeightRef = useTaskbarHeightVar();
+
+  // ---- Top-edge resize drag (macOS-dock style) ----
+  // Hovering the pill's top edge shows the ns-resize cursor; dragging up or
+  // down scales the pill live. Three ingredients keep it smooth:
+  // 1. The width is a PURE FUNCTION of the height: the content demand per
+  //    unit scale is captured once at drag start and scaled by the zoom
+  //    ratio — no feedback, no stale-baseline discontinuities.
+  // 2. The DOM leads optimistically at the full frame rate (the vars apply
+  //    the target instantly, so the content tracks the pointer) and the
+  //    landed window size corrects it a frame later (see
+  //    useTaskbarHeightVar) — the desync is bounded to one frame.
+  // 3. Live steps take the native fast path (no shell-synchronizing AppBar
+  //    round-trip) at 1px granularity, throttled only by the frame clock;
+  //    the commit does the full reposition and persists.
+  const beginResizeDrag = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) {
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      const scale = window.devicePixelRatio || 1;
+      // Screen coordinates, NOT client coordinates: the window's top edge
+      // moves under the pointer as the pill grows, so clientY measures the
+      // pointer's position relative to the MOVING window — the target
+      // becomes "the pointer movement since the last native apply" and
+      // oscillates every step (the violent resize jitter). screenY is
+      // invariant to the window's own movement, so the target is the true
+      // cumulative drag distance. (The app forces a 1x device scale, so
+      // screenY is physical px, same as the heights here.)
+      const startScreenY = event.screenY;
+      const startHeight = taskbarHeightRef.current;
+      // The width scaling needs a baseline: if the width pipeline hasn't
+      // reported anything yet (fresh boot), measure once before dragging.
+      if (resizeWidthPump.lastWidth <= 0) {
+        resizeWidthPump.fn?.();
+      }
+      // The content demand per unit scale (physical px at the 68px base
+      // height): zoom is linear in the layout, so the demand at any height
+      // is this constant times the ratio — a pure function of the height.
+      const widthBase =
+        resizeWidthPump.lastWidth > 0
+          ? resizeWidthPump.lastWidth / (startHeight / TASKBAR_BASE_HEIGHT_PX)
+          : 0;
+      let pending = Math.round(startHeight);
+      let applied = pending;
+      let raf = 0;
+      // Backpressure: the native command runs on the main thread (window
+      // resize + glass re-sync + events), so fire-and-forget invokes at the
+      // frame rate can enqueue faster than they execute — the visible
+      // resize then trails the pointer and keeps draining after release.
+      // ONE command is ever in flight; newer targets coalesce into the
+      // next send, and a commit queued mid-flight lands LAST, carrying the
+      // final height.
+      let inFlight = false;
+      let commitQueued = false;
+      let lastSent = pending;
+      const widthFor = (height: number, fromHeight: number): number | null => {
+        if (widthBase > 0) {
+          return Math.round(widthBase * (height / TASKBAR_BASE_HEIGHT_PX));
+        }
+        // No baseline (never measured): chain from the last known width,
+        // scaled by the height ratio since it was captured.
+        return resizeWidthPump.lastWidth > 0 && fromHeight > 0
+          ? Math.round(resizeWidthPump.lastWidth * (height / fromHeight))
+          : null;
+      };
+      const pump = (commit: boolean) => {
+        if (inFlight) {
+          if (commit) {
+            commitQueued = true;
+          }
+          return;
+        }
+        const isCommit = commit || commitQueued;
+        commitQueued = false;
+        const height = applied;
+        if (!isCommit && height === lastSent) {
+          return;
+        }
+        inFlight = true;
+        // Height and width ride ONE command/one reposition, so the pill's
+        // width always lands in lockstep with its height — the zoomed
+        // content can never overhang the window mid-drag.
+        void setTaskbarHeight(height * scale, isCommit, widthFor(height, lastSent))
+          .catch(() => {})
+          .finally(() => {
+            inFlight = false;
+            lastSent = height;
+            // Converge: a target applied while this command was in flight
+            // (or a queued commit) goes out with the next command.
+            if (commitQueued || applied !== lastSent) {
+              pump(commitQueued);
+            }
+          });
+      };
+      const apply = () => {
+        raf = 0;
+        // 1px steps at the display's frame rate; the DOM leads optimistically
+        // (it tracks the pointer) and the native side converges with
+        // backpressure — one command in flight, coalescing to the latest
+        // target, never a queue.
+        const height = Math.round(pending);
+        if (height === applied) {
+          return;
+        }
+        applied = height;
+        // Optimistic DOM: the content rescales toward the target instantly;
+        // the landed window size re-syncs the vars a frame later, so a
+        // clamp/snap self-corrects.
+        applyTaskbarHeightVars(height);
+        pump(false);
+      };
+      resizeDragActive.active = true;
+      resizeMeasureOnly.active = true;
+      document.body.classList.add("taskbar-resizing");
+      const move = (moveEvent: PointerEvent) => {
+        pending = Math.min(
+          Math.max(
+            startHeight + (startScreenY - moveEvent.screenY),
+            TASKBAR_MIN_HEIGHT_PX,
+          ),
+          TASKBAR_MAX_HEIGHT_PX,
+        );
+        if (!raf) {
+          raf = requestAnimationFrame(apply);
+        }
+      };
+      const up = () => {
+        window.removeEventListener("pointermove", move);
+        window.removeEventListener("pointerup", up);
+        window.removeEventListener("pointercancel", up);
+        if (raf) {
+          cancelAnimationFrame(raf);
+          raf = 0;
+        }
+        // Always finish with a commit: it persists the height (and applies
+        // it natively when the last live step never landed), at the EXACT
+        // pointer height. If a live command is still in flight, the commit
+        // is queued and lands after it, carrying the final height.
+        applied = Math.round(pending);
+        applyTaskbarHeightVars(applied);
+        pump(true);
+        resizeMeasureOnly.active = false;
+        resizeDragActive.active = false;
+        document.body.classList.remove("taskbar-resizing");
+      };
+      window.addEventListener("pointermove", move);
+      window.addEventListener("pointerup", up);
+      window.addEventListener("pointercancel", up);
+    },
+    [taskbarHeightRef],
+  );
 
   const pinnedSideLeft = usePinnedSideLeft();
   const { pinOrder, appOrder, save } = useTaskbarOrder();
@@ -586,7 +969,11 @@ export function Taskbar({
   const dragUpRef = useRef<(event: PointerEvent) => void>(() => {});
 
   const applyDragTransform = (drag: AppDragState) => {
-    drag.element.style.transform = `translate(${drag.offsetX}px, ${drag.offsetY}px) scale(${drag.scale})`;
+    // Transform lengths live in the element's PRE-ZOOM local units, while
+    // the offsets accumulate viewport (post-zoom) pointer deltas — divide
+    // by the UI scale so the ghost tracks the pointer exactly.
+    const ui = uiScale();
+    drag.element.style.transform = `translate(${drag.offsetX / ui}px, ${drag.offsetY / ui}px) scale(${drag.scale})`;
   };
 
   /** The pick-up: the button grows from 1 to 1.28 with an ease-out curve. */
@@ -619,7 +1006,9 @@ export function Taskbar({
   ) => {
     element.classList.add("app-settling");
     element.style.transition = "none";
-    element.style.transform = `translate(${offsetX}px, ${offsetY}px) scale(${startScale})`;
+    // Transform lengths are pre-zoom local units (see applyDragTransform).
+    const ui = uiScale();
+    element.style.transform = `translate(${offsetX / ui}px, ${offsetY / ui}px) scale(${startScale})`;
     // Commit the starting frame so the transition actually runs.
     element.getBoundingClientRect();
     element.style.transition = `transform ${SETTLE_DURATION_MS}ms ${SETTLE_EASING}`;
@@ -650,22 +1039,31 @@ export function Taskbar({
     if (!center) {
       return null;
     }
-    // The buttons' offsetLeft is relative to the offsetParent (.taskbar-shell);
-    // this converts pointer coordinates into the same space.
-    const shellLeft = center.getBoundingClientRect().left - center.offsetLeft;
+    // The buttons' offsetLeft/offsetWidth are LAYOUT values in PRE-ZOOM
+    // local units (CSS zoom does not appear in them), while clientX is a
+    // viewport (post-zoom) pixel. Anchor on the center's visual border-box
+    // left and scale the shell-relative layout offsets: the buttons share
+    // the center's offsetParent (.taskbar-shell), so the offsetLeft
+    // DIFFERENCE is a pure intra-content offset in zoom-free units, and
+    // multiplying by the UI scale maps it to viewport pixels.
+    const ui = uiScale();
+    const centerLeft = center.getBoundingClientRect().left;
+    const centerOffset = center.offsetLeft;
+    const visualLeft = (el: HTMLElement) =>
+      centerLeft + (el.offsetLeft - centerOffset) * ui;
     const layoutCenterX = (el: HTMLElement) =>
-      shellLeft + el.offsetLeft + el.offsetWidth / 2;
+      visualLeft(el) + (el.offsetWidth * ui) / 2;
     const buttons = Array.from(center.querySelectorAll<HTMLElement>("[data-app-entry]")).filter(
       (el) => el !== drag.element,
     );
     const divider = center.querySelector<HTMLElement>(".taskbar-divider");
     const middle = divider
       ? layoutCenterX(divider)
-      : shellLeft + center.offsetLeft + center.offsetWidth / 2;
+      : centerLeft + (center.offsetWidth * ui) / 2;
     let side: "pinned" | "running" | null = null;
     for (const el of buttons) {
-      const left = shellLeft + el.offsetLeft;
-      if (clientX >= left && clientX <= left + el.offsetWidth) {
+      const left = visualLeft(el);
+      if (clientX >= left && clientX <= left + el.offsetWidth * ui) {
         side = el.dataset.appSide === "pinned" ? "pinned" : "running";
         break;
       }
@@ -847,6 +1245,11 @@ export function Taskbar({
   useEffect(
     () => () => {
       document.body.classList.remove("app-drag-active");
+      // An unmount mid-resize-drag would otherwise leave the width
+      // pipeline in measure-only mode forever (no width updates apply).
+      resizeDragActive.active = false;
+      resizeMeasureOnly.active = false;
+      document.body.classList.remove("taskbar-resizing");
     },
     [],
   );
@@ -954,8 +1357,12 @@ export function Taskbar({
       if (dLeft || dTop) {
         drag.slotLeft += dLeft;
         drag.slotTop += dTop;
-        drag.offsetX -= dLeft;
-        drag.offsetY -= dTop;
+        // Layout offsets are pre-zoom local units; the ghost offsets
+        // accumulate viewport (post-zoom) pixels — scale the slot movement
+        // before compensating, so the ghost keeps tracking the pointer.
+        const ui = uiScale();
+        drag.offsetX -= dLeft * ui;
+        drag.offsetY -= dTop * ui;
         applyDragTransform(drag);
       }
     }
@@ -1061,6 +1468,11 @@ export function Taskbar({
   return (
     <main className="taskbar-shell">
       <div className="liquid-glass" />
+      <div
+        className="taskbar-resize-handle"
+        title="Drag to resize the taskbar"
+        onPointerDown={beginResizeDrag}
+      />
       <nav className="taskbar-content" aria-label="Glassbar taskbar">
         <div className="taskbar-left" aria-label="Gadgets">
           {enabledGadgets.length > 0 && (

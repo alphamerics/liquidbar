@@ -8,15 +8,15 @@ use windows::Win32::{
     System::Threading::{
         CreateProcessW, PROCESS_CREATION_FLAGS, PROCESS_INFORMATION, STARTUPINFOW,
     },
+    UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
     UI::WindowsAndMessaging::{
-        EnumWindows, GetClassNameW, GetCursorInfo, GetForegroundWindow, GetWindowLongW,
-        GetWindowPlacement, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
-        GetWindowThreadProcessId, IsIconic, DispatchMessageW, GetMessageW, IsWindowVisible,
-        PostMessageW, SetForegroundWindow, ShowWindow, TranslateMessage, GWL_EXSTYLE, SW_MINIMIZE,
-        SW_RESTORE, SW_SHOWMAXIMIZED, WINDOWPLACEMENT, WM_CLOSE, WINEVENT_OUTOFCONTEXT,
-        WS_EX_TOOLWINDOW, EVENT_SYSTEM_FOREGROUND, CURSORINFO, CURSOR_SHOWING,
+        DispatchMessageW, EnumWindows, GetClassNameW, GetCursorInfo, GetForegroundWindow,
+        GetMessageW, GetWindowLongW, GetWindowPlacement, GetWindowRect, GetWindowTextLengthW,
+        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PostMessageW,
+        SetForegroundWindow, ShowWindow, TranslateMessage, CURSORINFO, CURSOR_SHOWING,
+        EVENT_SYSTEM_FOREGROUND, GWL_EXSTYLE, SW_MINIMIZE, SW_RESTORE, SW_SHOWMAXIMIZED,
+        WINDOWPLACEMENT, WINEVENT_OUTOFCONTEXT, WM_CLOSE, WS_EX_TOOLWINDOW,
     },
-    UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent},
 };
 
 /// The last non-Glassbar window that held foreground, recorded the moment it
@@ -236,9 +236,7 @@ pub fn cursor_visible() -> bool {
         cbSize: std::mem::size_of::<CURSORINFO>() as u32,
         ..Default::default()
     };
-    unsafe { GetCursorInfo(&mut info) }
-        .is_ok()
-        && (info.flags.0 & CURSOR_SHOWING.0) != 0
+    unsafe { GetCursorInfo(&mut info) }.is_ok() && (info.flags.0 & CURSOR_SHOWING.0) != 0
 }
 
 /// Brings a window to the foreground, or — with `minimize_toggle` — plays
@@ -307,7 +305,10 @@ fn window_process_image(window_id: isize) -> Option<(u32, String)> {
         return None;
     }
     let wide = icons::executable_path(process_id)?;
-    Some((process_id, String::from_utf16_lossy(&wide[..wide.len() - 1])))
+    Some((
+        process_id,
+        String::from_utf16_lossy(&wide[..wide.len() - 1]),
+    ))
 }
 
 /// Parts of an image filename that mark a helper process: a piece of an app

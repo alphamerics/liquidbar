@@ -62,6 +62,9 @@ pub fn prewarm_menu_glass(
 
 /// Renders (or removes) the native liquid glass surface behind a menu. The
 /// rect is in physical pixels relative to the overlay's top-left corner.
+/// `local` feeds the surface from the host window's own capture instead of
+/// the shared monitor capture (in-app glass; Glassbar's own menus are
+/// always global).
 #[tauri::command]
 pub fn position_menu_glass(
     window: tauri::WebviewWindow,
@@ -73,6 +76,7 @@ pub fn position_menu_glass(
     glass_fade: Option<bool>,
     group: Option<String>,
     spring: Option<bool>,
+    local: Option<bool>,
 ) -> Result<(), String> {
     let rect = rect.map(|r| [r.x as f32, r.y as f32, r.width as f32, r.height as f32]);
     let radius = rect_radius.unwrap_or(20.0) as f32;
@@ -85,6 +89,7 @@ pub fn position_menu_glass(
         glass_fade.unwrap_or(false),
         group.as_deref(),
         spring.unwrap_or(false),
+        local.unwrap_or(false),
     )
 }
 

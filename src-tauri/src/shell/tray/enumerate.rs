@@ -189,13 +189,13 @@ fn cached_icon(key: IconKey, extract: impl FnOnce() -> Option<String>) -> Option
         }
     }
     let icon = extract();
-    ICON_CACHE
-        .lock()
-        .expect("icon cache lock poisoned")
-        .insert(key, CachedIcon {
+    ICON_CACHE.lock().expect("icon cache lock poisoned").insert(
+        key,
+        CachedIcon {
             at: Instant::now(),
             icon: icon.clone(),
-        });
+        },
+    );
     icon
 }
 
@@ -420,34 +420,34 @@ fn scan_records(
             break;
         }
         if info.State == MEM_COMMIT && info.Type == MEM_PRIVATE && readable(info.Protect) {
-                let mut chunk_base = base;
-                let mut remaining = region;
-                while remaining > 0 {
-                    let take = remaining.min(16 * 1024 * 1024);
-                    // Reads stay inside the region; the next chunk re-reads the
-                    // overlap so records straddling a chunk boundary are found.
-                    let read_size = if take < remaining {
-                        take + CHUNK_OVERLAP
-                    } else {
-                        take
-                    };
-                    let mut read = 0usize;
-                    if unsafe {
-                        ReadProcessMemory(
-                            explorer,
-                            chunk_base as *const core::ffi::c_void,
-                            buffer.as_mut_ptr().cast(),
-                            read_size,
-                            Some(&mut read),
-                        )
-                    }
-                    .is_err()
-                        || read <= 16
-                    {
-                        break;
-                    }
-                    scanned += take;
-                    collect_records(&buffer[..read], owners, &low_dwords, &mut records);
+            let mut chunk_base = base;
+            let mut remaining = region;
+            while remaining > 0 {
+                let take = remaining.min(16 * 1024 * 1024);
+                // Reads stay inside the region; the next chunk re-reads the
+                // overlap so records straddling a chunk boundary are found.
+                let read_size = if take < remaining {
+                    take + CHUNK_OVERLAP
+                } else {
+                    take
+                };
+                let mut read = 0usize;
+                if unsafe {
+                    ReadProcessMemory(
+                        explorer,
+                        chunk_base as *const core::ffi::c_void,
+                        buffer.as_mut_ptr().cast(),
+                        read_size,
+                        Some(&mut read),
+                    )
+                }
+                .is_err()
+                    || read <= 16
+                {
+                    break;
+                }
+                scanned += take;
+                collect_records(&buffer[..read], owners, &low_dwords, &mut records);
                 if take >= remaining {
                     break;
                 }
@@ -690,10 +690,9 @@ fn merge_toolbar_metadata(icons: &mut Vec<TrayIconInfo>) {
             let owner_hwnd = entry.owner_hwnd;
             let uid = entry.uid;
             let pid = super::window_pid(HWND(owner_hwnd as *mut _)).unwrap_or(0);
-            entry.icon = cached_icon(
-                (owner_hwnd, pid, uid, ICON_SOURCE_EXECUTABLE),
-                || executable_icon(owner_hwnd),
-            );
+            entry.icon = cached_icon((owner_hwnd, pid, uid, ICON_SOURCE_EXECUTABLE), || {
+                executable_icon(owner_hwnd)
+            });
         }
     }
 }
@@ -894,15 +893,13 @@ fn read_toolbar_icons(toolbar: HWND) -> Vec<TrayIconInfo> {
 
             let tooltip = read_tooltip(process, toolbar, button.idCommand, text_remote);
             let owner_pid = owner_pid.unwrap_or(0);
-            let icon = cached_icon(
-                (owner_hwnd, owner_pid, uid, ICON_SOURCE_TOOLBAR),
-                || read_icon_image(image_list, button.iBitmap),
-            )
+            let icon = cached_icon((owner_hwnd, owner_pid, uid, ICON_SOURCE_TOOLBAR), || {
+                read_icon_image(image_list, button.iBitmap)
+            })
             .or_else(|| {
-                cached_icon(
-                    (owner_hwnd, owner_pid, uid, ICON_SOURCE_EXECUTABLE),
-                    || executable_icon(owner_hwnd),
-                )
+                cached_icon((owner_hwnd, owner_pid, uid, ICON_SOURCE_EXECUTABLE), || {
+                    executable_icon(owner_hwnd)
+                })
             });
 
             icons.push(TrayIconInfo {

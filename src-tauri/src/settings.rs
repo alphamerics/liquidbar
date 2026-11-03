@@ -24,15 +24,51 @@ pub type GadgetSettings = std::collections::HashMap<String, serde_json::Value>;
 /// matching it exactly means the user never customized the panel.
 fn legacy_default_cc_layout() -> Vec<CcLayoutItem> {
     vec![
-        CcLayoutItem { id: "wifi".to_string(), x: 0, y: 0 },
-        CcLayoutItem { id: "bluetooth".to_string(), x: 2, y: 0 },
-        CcLayoutItem { id: "focus".to_string(), x: 0, y: 1 },
-        CcLayoutItem { id: "calendar".to_string(), x: 2, y: 1 },
-        CcLayoutItem { id: "airplane".to_string(), x: 0, y: 2 },
-        CcLayoutItem { id: "night-light".to_string(), x: 1, y: 2 },
-        CcLayoutItem { id: "tray".to_string(), x: 2, y: 2 },
-        CcLayoutItem { id: "settings".to_string(), x: 3, y: 2 },
-        CcLayoutItem { id: "sound".to_string(), x: 0, y: 3 },
+        CcLayoutItem {
+            id: "wifi".to_string(),
+            x: 0,
+            y: 0,
+        },
+        CcLayoutItem {
+            id: "bluetooth".to_string(),
+            x: 2,
+            y: 0,
+        },
+        CcLayoutItem {
+            id: "focus".to_string(),
+            x: 0,
+            y: 1,
+        },
+        CcLayoutItem {
+            id: "calendar".to_string(),
+            x: 2,
+            y: 1,
+        },
+        CcLayoutItem {
+            id: "airplane".to_string(),
+            x: 0,
+            y: 2,
+        },
+        CcLayoutItem {
+            id: "night-light".to_string(),
+            x: 1,
+            y: 2,
+        },
+        CcLayoutItem {
+            id: "tray".to_string(),
+            x: 2,
+            y: 2,
+        },
+        CcLayoutItem {
+            id: "settings".to_string(),
+            x: 3,
+            y: 2,
+        },
+        CcLayoutItem {
+            id: "sound".to_string(),
+            x: 0,
+            y: 3,
+        },
     ]
 }
 
@@ -61,17 +97,61 @@ pub fn upgrade_legacy_cc_layout(settings: &mut GlassbarSettings) -> bool {
 /// The control center's default widget arrangement.
 pub fn default_cc_layout() -> Vec<CcLayoutItem> {
     vec![
-        CcLayoutItem { id: "wifi".to_string(), x: 0, y: 0 },
-        CcLayoutItem { id: "bluetooth".to_string(), x: 2, y: 0 },
-        CcLayoutItem { id: "focus".to_string(), x: 0, y: 1 },
-        CcLayoutItem { id: "calendar".to_string(), x: 2, y: 1 },
-        CcLayoutItem { id: "airplane".to_string(), x: 0, y: 2 },
-        CcLayoutItem { id: "night-light".to_string(), x: 1, y: 2 },
-        CcLayoutItem { id: "tray".to_string(), x: 2, y: 2 },
-        CcLayoutItem { id: "settings".to_string(), x: 3, y: 2 },
-        CcLayoutItem { id: "sound".to_string(), x: 0, y: 3 },
-        CcLayoutItem { id: "battery".to_string(), x: 0, y: 4 },
-        CcLayoutItem { id: "exit".to_string(), x: 2, y: 4 },
+        CcLayoutItem {
+            id: "wifi".to_string(),
+            x: 0,
+            y: 0,
+        },
+        CcLayoutItem {
+            id: "bluetooth".to_string(),
+            x: 2,
+            y: 0,
+        },
+        CcLayoutItem {
+            id: "focus".to_string(),
+            x: 0,
+            y: 1,
+        },
+        CcLayoutItem {
+            id: "calendar".to_string(),
+            x: 2,
+            y: 1,
+        },
+        CcLayoutItem {
+            id: "airplane".to_string(),
+            x: 0,
+            y: 2,
+        },
+        CcLayoutItem {
+            id: "night-light".to_string(),
+            x: 1,
+            y: 2,
+        },
+        CcLayoutItem {
+            id: "tray".to_string(),
+            x: 2,
+            y: 2,
+        },
+        CcLayoutItem {
+            id: "settings".to_string(),
+            x: 3,
+            y: 2,
+        },
+        CcLayoutItem {
+            id: "sound".to_string(),
+            x: 0,
+            y: 3,
+        },
+        CcLayoutItem {
+            id: "battery".to_string(),
+            x: 0,
+            y: 4,
+        },
+        CcLayoutItem {
+            id: "exit".to_string(),
+            x: 2,
+            y: 4,
+        },
     ]
 }
 
@@ -145,6 +225,10 @@ pub struct GlassbarSettings {
     #[serde(skip_serializing)]
     pub wobble: f64,
     pub pill_radius: f64,
+    /// The taskbar pill's height (physical px), resized live by dragging the
+    /// pill's top edge (macOS-dock style). The native shell derives the
+    /// AppBar strip, the overlay window and the glass anchor from it.
+    pub taskbar_height: f64,
     /// Taskbar resize animation: squash & stretch depth (0..1), spring
     /// bounciness (0..1) and one oscillation period in milliseconds.
     pub resize_squash: f64,
@@ -177,6 +261,12 @@ pub struct GlassbarSettings {
     /// registry's per-user Run key). On by default; toggling the setting
     /// writes or deletes the registry entry live.
     pub launch_on_startup: bool,
+    /// The global shortcut that toggles "completely disable the taskbar":
+    /// pressing it hides the pill no matter what (hover and the reveal
+    /// strip included), pressing it again brings it back. Stored as a
+    /// "+"-joined token string (see `hotkey`); an unparseable value only
+    /// disables the hotkey, never the rest of the app.
+    pub disable_hotkey: String,
     /// Whether the reveal gesture still works while a true fullscreen app
     /// is in the foreground. With this on, the bottom-edge strip only
     /// reveals the taskbar while the mouse cursor is VISIBLE — games hide
@@ -229,6 +319,7 @@ impl Default for GlassbarSettings {
             turbulence_scale: 0.0,
             wobble: 0.0,
             pill_radius: 34.0,
+            taskbar_height: crate::shell::TASKBAR_HEIGHT_DEFAULT_PX as f64,
             resize_squash: 0.3,
             resize_bounce: 0.3,
             resize_duration: 600.0,
@@ -242,6 +333,7 @@ impl Default for GlassbarSettings {
             hide_taskbar: true,
             launch_on_startup: true,
             hide_when_unhovered: false,
+            disable_hotkey: "Ctrl+Alt+Shift+H".to_string(),
             reveal_in_fullscreen: true,
             cc_layout: default_cc_layout(),
             cc_layout_version: CC_LAYOUT_VERSION_CURRENT,
@@ -368,6 +460,9 @@ pub fn shader_params_from(settings: &GlassbarSettings) -> liquid_glass::GlassSha
         turbulence_strength: settings.turbulence_strength as f32,
         turbulence_scale: settings.turbulence_scale as f32,
         reveal_wobble: settings.wobble as f32,
+        // The live pill radius scales with the pill height (see the
+        // renderer), so the normalized capsule ratio is height-independent
+        // and stays keyed to the default 68 px height.
         capsule_radius: (settings.pill_radius as f32 / 68.0).clamp(0.0, 0.5),
         ..Default::default()
     }

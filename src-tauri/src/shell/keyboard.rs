@@ -9,8 +9,7 @@
 
 use serde::Serialize;
 use windows::Win32::Globalization::{
-    GetLocaleInfoW, GetUserDefaultUILanguage, LOCALE_SENGLISHDISPLAYNAME,
-    LOCALE_SISO639LANGNAME2,
+    GetLocaleInfoW, GetUserDefaultUILanguage, LOCALE_SENGLISHDISPLAYNAME, LOCALE_SISO639LANGNAME2,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
 use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
@@ -52,7 +51,9 @@ pub fn snapshot() -> KeyboardLayout {
 
 /// Extracts the input language from an HKL (its low word is the LANGID) and
 /// resolves it to the display strings via the locale database.
-fn keyboard_layout_from_hkl(hkl: windows::Win32::UI::Input::KeyboardAndMouse::HKL) -> KeyboardLayout {
+fn keyboard_layout_from_hkl(
+    hkl: windows::Win32::UI::Input::KeyboardAndMouse::HKL,
+) -> KeyboardLayout {
     keyboard_layout_from_langid((hkl.0 as usize & 0xFFFF) as u32)
 }
 

@@ -50,19 +50,23 @@ fn apply_settings(
     renderer: &RendererState,
     settings: GlassbarSettings,
 ) -> Result<(), String> {
-    let (previous_reserve, previous_radius, previous_hide_taskbar, previous_launch_on_startup) = {
+    let (previous_reserve, previous_radius, previous_hide_taskbar, previous_launch_on_startup, previous_height, previous_disable_hotkey) = {
         let guard = state.lock().expect("settings lock poisoned");
         (
             guard.reserve_space,
             guard.pill_radius,
             guard.hide_taskbar,
             guard.launch_on_startup,
+            guard.taskbar_height,
+            guard.disable_hotkey.clone(),
         )
     };
     let reserve_changed = previous_reserve != settings.reserve_space;
     let radius_changed = (previous_radius - settings.pill_radius).abs() >= 0.5;
     let hide_taskbar_changed = previous_hide_taskbar != settings.hide_taskbar;
     let launch_on_startup_changed = previous_launch_on_startup != settings.launch_on_startup;
+    let height_changed = (previous_height - settings.taskbar_height).abs() >= 1.0;
+    let disable_hotkey_changed = previous_disable_hotkey != settings.disable_hotkey;
     *state.lock().expect("settings lock poisoned") = settings.clone();
     shell::save_settings(app, &settings);
     // The resize-spring parameters are cached on the renderer so any spring
@@ -90,6 +94,55 @@ fn apply_settings(
     // previous value was already read.
     if launch_on_startup_changed {
         shell::set_launch_on_startup(settings.launch_on_startup);
+    }
+    // The toggle hotkey re-registers on its own thread: the request is a
+    // posted message, so an unparseable or in-use combo only logs there.
+    if disable_hotkey_changed {
+        crate::hotkey::reapply();
+    }
+    // A pill-height change re-places the shell geometry and retargets the
+    // glass anchor (the same path the top-edge resize drag uses). The
+    // content zoom scales with the height, so the pill's width scales with
+    // it too — proportionally, in the same reposition, exactly like the
+    // drag path; the webview's width pipeline corrects the estimate after.
+    if height_changed {
+        let height = settings.taskbar_height
+            .round()
+            .clamp(
+                crate::commands::taskbar::TASKBAR_HEIGHT_MIN_PX,
+                crate::commands::taskbar::TASKBAR_HEIGHT_MAX_PX,
+            ) as i32;
+        shell::set_taskbar_height_px(height);
+        if previous_height >= 1.0 {
+            let scaled = (renderer.taskbar_content_width() * (height as f64 / previous_height))
+                .round();
+            renderer.set_taskbar_content_width(scaled);
+            renderer.set_effective_taskbar_width(shell::taskbar_width_px(scaled as i32) as f64);
+        }
+        if let Some(window) = app.get_webview_window("main") {
+            if let Ok(hwnd) = window.hwnd() {
+                let width = renderer.taskbar_content_width() as i32;
+                // Stage the glass anchor before the resize (see the resize
+                // drag's note): one consistent geometry step, no flash.
+                renderer.stage_taskbar_pill_height(height as f32);
+                let result = if settings.reserve_space {
+                    shell::reposition_appbar(hwnd.0 as isize, width)
+                } else {
+                    shell::reposition_unregistered(hwnd.0 as isize, width)
+                };
+                if let Err(error) = result {
+                    eprintln!("Could not apply the taskbar height {height}px: {error}");
+                }
+                let landed = window
+                    .inner_size()
+                    .map(|size| size.width as i32)
+                    .unwrap_or(width);
+                renderer.set_applied_taskbar_width(landed);
+            }
+        }
+        if let Err(error) = renderer.set_taskbar_pill_height(height as f32) {
+            eprintln!("Could not retarget the glass pill: {error}");
+        }
     }
     // The AppBar registration is what actually sizes and places the overlay.
     // A reservation toggle needs the full unregister/register churn. The
@@ -131,8 +184,7 @@ pub fn set_settings(
     // here instead of a full snapshot, so a write racing another window's
     // write can no longer revert fields it did not touch.
     let current = state.lock().expect("settings lock poisoned").clone();
-    let mut merged =
-        serde_json::to_value(&current).map_err(|error| error.to_string())?;
+    let mut merged = serde_json::to_value(&current).map_err(|error| error.to_string())?;
     if let (Some(fields), Some(patch_fields)) = (merged.as_object_mut(), patch.as_object()) {
         for (key, value) in patch_fields {
             fields.insert(key.clone(), value.clone());
@@ -164,7 +216,9 @@ pub fn set_settings(
         serde_json::from_value(merged).map_err(|error| error.to_string())?;
     eprintln!(
         "[settings] patch keys: {:?} -> cc toggles {:?}, layout {} items",
-        patch.as_object().map(|fields| fields.keys().cloned().collect::<Vec<_>>()),
+        patch
+            .as_object()
+            .map(|fields| fields.keys().cloned().collect::<Vec<_>>()),
         settings.cc_toggles,
         settings.cc_layout.len(),
     );
@@ -204,8 +258,7 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
         let _ = existing.unminimize();
         let _ = existing.show();
         let _ = existing.set_focus();
-        app.state::<RendererState>()
-            .set_settings_open(true);
+        app.state::<RendererState>().set_settings_open(true);
         return Ok(());
     }
     // In dev the app runs from the vite server; App() paths can resolve
@@ -247,15 +300,12 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     );
     // While the settings window is open the taskbar must not auto-hide: the
     // pill stays put until the window is closed (or otherwise destroyed).
-    app.state::<RendererState>()
-        .set_settings_open(true);
+    app.state::<RendererState>().set_settings_open(true);
     {
         let handle = app.clone();
         window.on_window_event(move |event| {
             if matches!(event, tauri::WindowEvent::Destroyed) {
-                handle
-                    .state::<RendererState>()
-                    .set_settings_open(false);
+                handle.state::<RendererState>().set_settings_open(false);
             }
         });
     }

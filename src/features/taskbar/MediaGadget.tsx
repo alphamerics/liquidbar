@@ -24,7 +24,15 @@ interface MediaGadgetProps {
  * `hover-blur` escape hatch behave identically.
  */
 export function MediaGadget({ media }: MediaGadgetProps) {
-  const panel = useHoverPanel();
+  const panel = useHoverPanel({
+    // The pill-resize revalidation (hoverPanel.ts): the gadget is the source,
+    // and the hover card is this panel's popup (there is only ever one media
+    // card, so the unscoped selector is safe).
+    sourceRect: () => gadgetRef.current?.getBoundingClientRect() ?? null,
+    popupRect: () =>
+      document.querySelector<HTMLElement>("[data-media-hover]")
+        ?.getBoundingClientRect() ?? null,
+  });
   const gadgetRef = useRef<HTMLDivElement | null>(null);
   // Optimistic play/pause: flip instantly on click, then yield to the
   // authoritative snapshot once it confirms (or after a grace period).

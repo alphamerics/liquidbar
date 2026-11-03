@@ -121,6 +121,9 @@ export interface GlassbarSettings {
   turbulenceScale: number;
   wobble: number;
   pillRadius: number;
+  /** The taskbar pill's height (physical px), resized by dragging the
+   * pill's top edge (macOS-dock style). */
+  taskbarHeight: number;
   /** Taskbar resize squash & stretch: depth (0..1). */
   resizeSquash: number;
   /** Taskbar resize spring bounciness (0..1). */
@@ -149,6 +152,10 @@ export interface GlassbarSettings {
   /** Stricter auto-hide: the taskbar fully hides whenever it is not
    * hovered, even when no maximized window covers the strip. */
   hideWhenUnhovered: boolean;
+  /** The global shortcut that toggles "completely disable the taskbar",
+   * as a "+"-joined token string (e.g. "Ctrl+Alt+Shift+H"). Pressing it
+   * hides the pill no matter what; pressing it again restores it. */
+  disableHotkey: string;
   /** Whether the reveal gesture still works under fullscreen apps: on,
    * only while the mouse cursor is visible (games hide it during play);
    * off, the strip is fully ignored under fullscreen. */
@@ -249,13 +256,41 @@ export async function setReserveSpace(enabled: boolean): Promise<void> {
 /**
  * Reports the taskbar's measured content width (physical pixels). The pill
  * grows to fit the content and shrinks back when it needs less, capped below
- * the monitor width so it can never overflow the screen.
+ * the monitor width so it can never overflow the screen. `animate = false`
+ * marks the report as a consequence of a pill-height change (the rescaled
+ * content), which must not spawn a width resize spring.
  */
-export async function setTaskbarContentWidth(width: number): Promise<void> {
+export async function setTaskbarContentWidth(
+  width: number,
+  animate = true,
+): Promise<void> {
   try {
-    await invoke("set_taskbar_content_width", { desiredWidth: width });
+    await invoke("set_taskbar_content_width", { desiredWidth: width, animate });
   } catch {
     // The browser preview does not expose the native AppBar registration.
+  }
+}
+
+/**
+ * Resizes the taskbar pill live (physical pixels): the AppBar strip, the
+ * overlay window and the glass anchor all follow in ONE reposition, so the
+ * height and the width always land together. Mid-drag steps pass
+ * `commit = false` (geometry only); the final call persists and broadcasts.
+ * `width` (the proportionally scaled pill width) may be omitted.
+ */
+export async function setTaskbarHeight(
+  height: number,
+  commit = true,
+  width: number | null = null,
+): Promise<void> {
+  try {
+    await invoke("set_taskbar_height", {
+      desiredHeight: height,
+      desiredWidth: width,
+      commit,
+    });
+  } catch {
+    // The browser preview does not expose the native shell geometry.
   }
 }
 

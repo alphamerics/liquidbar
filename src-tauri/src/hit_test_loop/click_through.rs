@@ -43,7 +43,8 @@ impl CursorHover {
             && cursor.y >= rect.top
             && cursor.y < rect.bottom;
         let interactive = inside && hit_rects.iter().any(|hit| in_rect(&cursor, hit));
-        let pill_hover = inside && cursor.y >= shell::overlay_bottom_y() - shell::TASKBAR_HEIGHT_PX;
+        let pill_hover =
+            inside && cursor.y >= shell::overlay_bottom_y() - shell::taskbar_height_px();
         Self {
             interactive,
             pill_hover,

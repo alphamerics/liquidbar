@@ -23,8 +23,8 @@ use std::time::Duration;
 use tauri::Manager;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, GetWindowRect, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK,
-    MSG, MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_MOUSEWHEEL,
+    CallNextHookEx, GetMessageW, GetWindowRect, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK, MSG,
+    MSLLHOOKSTRUCT, WH_MOUSE_LL, WM_MOUSEWHEEL,
 };
 
 /// One wheel notch's volume step (Windows' own tray behavior steps 2%).
@@ -112,7 +112,7 @@ unsafe fn wheel_over_pill(pt: POINT, app: &tauri::AppHandle, overlay: HWND) -> b
     // Only the pill's own strip: the overlay's taller body hosts the
     // floating panels, whose scroll belongs to them (the panels never reach
     // down into the pill band, so the band check alone mostly decides).
-    if pt.y < rect.bottom - shell::TASKBAR_HEIGHT_PX {
+    if pt.y < rect.bottom - shell::taskbar_height_px() {
         return false;
     }
     let state = app.state::<RendererState>();

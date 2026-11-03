@@ -1,5 +1,6 @@
-import { useEffect, useId, useRef } from "react";
+import { useCallback, useEffect, useId, useRef } from "react";
 import type { CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import { activateWindow, setWindowPreview, type TaskbarApp } from "../../lib/shell";
 import { useLiquidGlassSurface } from "glass-ui";
 import { AppIcon } from "./AppIcon";
@@ -25,6 +26,7 @@ interface AppPreviewProps {
 export function AppPreview({ app, anchor, onHover }: AppPreviewProps) {
   const previewId = useId();
   const imageRef = useRef<HTMLDivElement | null>(null);
+  const frame = useRef(0);
   const hoverRef = useRef(onHover);
   hoverRef.current = onHover;
 
@@ -51,55 +53,60 @@ export function AppPreview({ app, anchor, onHover }: AppPreviewProps) {
     return () => unlisten?.();
   }, []);
 
+  const push = useCallback(() => {
+    const node = imageRef.current;
+    if (!node) {
+      return;
+    }
+    const rect = node.getBoundingClientRect();
+    if (rect.width < 1 || rect.height < 1) {
+      return;
+    }
+    const scale = window.devicePixelRatio || 1;
+    // Nested border-radius rule, in physical px: the capture's corner
+    // radius must be the glass frame's own rounding minus the popup's
+    // padding inset, so the curves stay concentric. The glass frame's
+    // radius is DPI-unscaled (see useLiquidGlassSurface), while the
+    // padding is CSS px and is scaled here.
+    const container = node.parentElement;
+    const containerStyle = container ? getComputedStyle(container) : null;
+    const paddingPx = (parseFloat(containerStyle?.paddingLeft ?? "") || 0) * scale;
+    void setWindowPreview(app.id, {
+      x: rect.left * scale,
+      y: rect.top * scale,
+      width: rect.width * scale,
+      height: rect.height * scale,
+      radius: Math.max(GLASS_RADIUS_PX - paddingPx, 0),
+    });
+  }, [app.id]);
+  const pushSettled = useCallback(() => {
+    if (frame.current) {
+      return;
+    }
+    frame.current = requestAnimationFrame(() => {
+      frame.current = requestAnimationFrame(() => {
+        frame.current = 0;
+        push();
+      });
+    });
+  }, [push]);
   useEffect(() => {
-    let frame = 0;
-    const push = () => {
-      const node = imageRef.current;
-      if (!node) {
-        return;
-      }
-      const rect = node.getBoundingClientRect();
-      if (rect.width < 1 || rect.height < 1) {
-        return;
-      }
-      const scale = window.devicePixelRatio || 1;
-      // Nested border-radius rule, in physical px: the capture's corner
-      // radius must be the glass frame's own rounding minus the popup's
-      // padding inset, so the curves stay concentric. The glass frame's
-      // radius is DPI-unscaled (see useLiquidGlassSurface), while the
-      // padding is CSS px and is scaled here.
-      const container = node.parentElement;
-      const containerStyle = container ? getComputedStyle(container) : null;
-      const paddingPx = (parseFloat(containerStyle?.paddingLeft ?? "") || 0) * scale;
-      void setWindowPreview(app.id, {
-        x: rect.left * scale,
-        y: rect.top * scale,
-        width: rect.width * scale,
-        height: rect.height * scale,
-        radius: Math.max(GLASS_RADIUS_PX - paddingPx, 0),
-      });
-    };
-    const pushSettled = () => {
-      if (frame) {
-        return;
-      }
-      frame = requestAnimationFrame(() => {
-        frame = requestAnimationFrame(() => {
-          frame = 0;
-          push();
-        });
-      });
-    };
     pushSettled();
     const timer = window.setInterval(pushSettled, 500);
     return () => {
-      if (frame) {
-        cancelAnimationFrame(frame);
+      if (frame.current) {
+        cancelAnimationFrame(frame.current);
       }
       window.clearInterval(timer);
       void setWindowPreview(null, null);
     };
-  }, [app.id]);
+  }, [pushSettled]);
+  // Re-anchor: a pill resize can slide the anchor button (and this preview
+  // with it) sideways while open; push the fresh image rect so the native
+  // thumbnail follows immediately instead of within the 500ms interval tick.
+  useEffect(() => {
+    pushSettled();
+  }, [anchor, pushSettled]);
 
   const left = Math.min(
     Math.max(anchor.left + anchor.width / 2 - PREVIEW_WIDTH / 2, VIEWPORT_MARGIN),
@@ -111,10 +118,21 @@ export function AppPreview({ app, anchor, onHover }: AppPreviewProps) {
     width: PREVIEW_WIDTH,
   };
 
-  return (
+  // Portal to document.body: the pill resize spring squashes-and-stretches
+  // .taskbar-shell with a CSS transform every frame, and a transformed
+  // ancestor becomes the containing block for position:fixed descendants —
+  // the preview would ride the squash, its rect would change every frame,
+  // and each change would re-anchor the preview glass (spawning a native
+  // preview spring that kills the pill spring mid-flight, leaving the
+  // taskbar stranded mid-resize). Rendered at body level the preview's
+  // position:fixed coordinates track the real viewport and stay still
+  // through the whole spring; the hoverPanel's post-settle revalidation
+  // re-anchors it once, after the pill has settled.
+  return createPortal(
     <div
       className="app-preview"
       data-app-preview={previewId}
+      data-app-id={app.id}
       style={style}
       onPointerEnter={() => onHover(true)}
       onPointerLeave={() => onHover(false)}
@@ -131,6 +149,7 @@ export function AppPreview({ app, anchor, onHover }: AppPreviewProps) {
         </span>
         <span className="app-preview-title-text">{app.title}</span>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

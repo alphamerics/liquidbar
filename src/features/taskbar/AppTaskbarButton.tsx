@@ -44,7 +44,16 @@ export function AppTaskbarButton({
   // (hoverPanel.ts): the hover dwell opens it, leaving the button (or the
   // preview's glass frame) arms the grace, and hovering the preview cancels
   // it again — identical to the media hover card's behavior.
-  const panel = useHoverPanel();
+  const panel = useHoverPanel({
+    // The pill-resize revalidation (hoverPanel.ts): the button is the source,
+    // and this panel's popup is the preview box (matched by the app id, so
+    // two stacked previews can never claim each other's cursor).
+    sourceRect: () => buttonRef.current?.getBoundingClientRect() ?? null,
+    popupRect: () =>
+      document.querySelector<HTMLElement>(
+        `[data-app-preview][data-app-id="${app.id}"]`,
+      )?.getBoundingClientRect() ?? null,
+  });
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   // Pinned placeholders (closed apps) have no window to preview or close.
   const isRunning = app.id !== -1;

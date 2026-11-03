@@ -75,9 +75,7 @@ fn windows_epoch_secs() -> f64 {
 /// ~1.5s, so while the track is playing the position is advanced by the time
 /// elapsed since that sample. Falling back to the raw sample when paused.
 pub fn timeline() -> TimelineInfo {
-    let timeline = TIMELINE
-        .lock()
-        .expect("media timeline lock poisoned");
+    let timeline = TIMELINE.lock().expect("media timeline lock poisoned");
     match *timeline {
         None => TimelineInfo::default(),
         Some(timeline) => {
@@ -120,7 +118,8 @@ pub fn thumbnail() -> Option<String> {
 fn fetch_thumbnail(
     properties: &GlobalSystemMediaTransportControlsSessionMediaProperties,
 ) -> Option<String> {
-    let read = || -> Result<String, String> {        let reference = properties.Thumbnail().map_err(|error| error.to_string())?;
+    let read = || -> Result<String, String> {
+        let reference = properties.Thumbnail().map_err(|error| error.to_string())?;
         let stream = reference
             .OpenReadAsync()
             .map_err(|error| error.to_string())?
@@ -130,7 +129,9 @@ fn fetch_thumbnail(
         if size == 0 || size > 8 * 1_048_576 {
             return Err("thumbnail missing or implausibly large".to_string());
         }
-        let input = stream.GetInputStreamAt(0).map_err(|error| error.to_string())?;
+        let input = stream
+            .GetInputStreamAt(0)
+            .map_err(|error| error.to_string())?;
         let reader = DataReader::CreateDataReader(&input).map_err(|error| error.to_string())?;
         reader
             .SetInputStreamOptions(InputStreamOptions::Partial)
@@ -218,10 +219,7 @@ const IDLE_BARS: [f32; 5] = [0.1, 0.1, 0.1, 0.1, 0.1];
 const LEVEL_EPSILON: f32 = 0.004;
 
 fn cached_manager() -> Option<GlobalSystemMediaTransportControlsSessionManager> {
-    MANAGER
-        .lock()
-        .expect("media manager lock poisoned")
-        .clone()
+    MANAGER.lock().expect("media manager lock poisoned").clone()
 }
 
 /// Evicts the cached manager so the next poll re-requests it (e.g. after
@@ -412,8 +410,9 @@ fn try_action(
         TransportAction::SkipNext => session.TrySkipNextAsync(),
         TransportAction::SkipPrevious => session.TrySkipPreviousAsync(),
         // SMTC takes the requested position in 100-nanosecond ticks.
-        TransportAction::Seek(position_secs) => session
-            .TryChangePlaybackPositionAsync((position_secs * 10_000_000.0) as i64),
+        TransportAction::Seek(position_secs) => {
+            session.TryChangePlaybackPositionAsync((position_secs * 10_000_000.0) as i64)
+        }
     }
     .map_err(|error| error.to_string())?;
     let acted = operation.get().map_err(|error| error.to_string())?;
@@ -425,8 +424,7 @@ fn try_action(
 
 /// Picks the session transport actions target: the one the pill is
 /// displaying, then any playing session, then the first session at all.
-fn preferred_session(
-) -> Result<Option<GlobalSystemMediaTransportControlsSession>, String> {
+fn preferred_session() -> Result<Option<GlobalSystemMediaTransportControlsSession>, String> {
     let manager = session_manager()?;
     let sessions = manager.GetSessions().map_err(|error| error.to_string())?;
     let count = sessions.Size().map_err(|error| error.to_string())?;
@@ -582,7 +580,10 @@ fn poll_media() -> Result<MediaSnapshot, String> {
     // poll runs every ~1.5s but the WinRT art round-trip must not.
     if let Some(title) = &snapshot.title {
         let key = format!("{}|{}", snapshot.artist.as_deref().unwrap_or(""), title);
-        let cached = THUMBNAIL.lock().expect("media thumbnail lock poisoned").clone();
+        let cached = THUMBNAIL
+            .lock()
+            .expect("media thumbnail lock poisoned")
+            .clone();
         if !matches!(cached, Some((cached_key, _)) if cached_key == key) {
             let thumbnail = fetch_thumbnail(&properties);
             if thumbnail.is_none() {
@@ -590,8 +591,7 @@ fn poll_media() -> Result<MediaSnapshot, String> {
                 // the console instead of failing into a silent placeholder.
                 eprintln!("[media] no thumbnail pulled for {key}");
             }
-            *THUMBNAIL.lock().expect("media thumbnail lock poisoned") =
-                Some((key, thumbnail));
+            *THUMBNAIL.lock().expect("media thumbnail lock poisoned") = Some((key, thumbnail));
         }
     }
     Ok(snapshot)

@@ -54,4 +54,3 @@ pub fn set_window_preview(
         rect.as_ref().and_then(|r| r.radius).unwrap_or(13.0) as i32,
     )
 }
-

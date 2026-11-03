@@ -11,17 +11,17 @@
 mod click_through;
 
 use crate::renderer::{
-    decide, slide_target, z_layer, LayerInputs, Layering, RendererState, Reveal, RevealConfig,
-    Slide, SlideInputs,
+    decide, slide_target, z_layer, Layer, LayerInputs, Layering, RendererState, Reveal,
+    RevealConfig, Slide, SlideInputs,
 };
 use crate::settings::GlassbarSettings;
 use crate::shell;
 use tauri::Manager;
+use windows::core::w;
 use windows::Win32::System::Threading::{
     CreateWaitableTimerExW, SetWaitableTimer, WaitForSingleObject,
     CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS,
 };
-use windows::core::w;
 
 /// The supervision cadence while something needs fast response: the slide
 /// animation is in flight, the cursor is on the pill/strip (reveal and
@@ -173,7 +173,7 @@ pub fn spawn_hit_test_loop(window: tauri::WebviewWindow, renderer: tauri::AppHan
                     }
                     let screen_height = GetSystemMetrics(SM_CYSCREEN);
                     let overlay_bottom = shell::overlay_bottom_y();
-                    let rest_top = overlay_bottom - shell::OVERLAY_HEIGHT_PX;
+                    let rest_top = overlay_bottom - shell::overlay_height_px();
                     let hidden_top = screen_height;
                     // The expanded (hovered) band is active exactly while the
                     // taskbar floats — the z-order system's belief, one tick
@@ -199,8 +199,7 @@ pub fn spawn_hit_test_loop(window: tauri::WebviewWindow, renderer: tauri::AppHan
                     // reveal-in-fullscreen off the strip is fully ignored
                     // under fullscreen apps.
                     let strip = reveal.contains(cursor.y, screen_height)
-                        && (!cover.fullscreen
-                            || (reveal_in_fullscreen && shell::cursor_visible()));
+                        && (!cover.fullscreen || (reveal_in_fullscreen && shell::cursor_visible()));
                     // While the settings window is open the taskbar stays put
                     // no matter where the cursor goes — the window belongs to
                     // the pill and hiding one would hide the other.
@@ -231,15 +230,23 @@ pub fn spawn_hit_test_loop(window: tauri::WebviewWindow, renderer: tauri::AppHan
                     // The resting layer (the rules live in renderer::layering)
                     // drives both the slide target and, via z_layer, the
                     // z-order band below.
-                    let resting_layer = decide(&LayerInputs {
-                        autohide,
-                        foreground_maximized: fg_maximized,
-                        foreground_fullscreen: fg_fullscreen,
-                        hovered: reach,
-                        settings_open,
-                        menus_open,
-                        hide_when_unhovered,
-                    });
+                    // The toggle hotkey (hotkey::taskbar_disabled) forces
+                    // the Hidden layer in EVERY mode: hover, the reveal
+                    // strip, open panels and the settings window are all
+                    // ignored until the hotkey is pressed again.
+                    let resting_layer = if crate::hotkey::taskbar_disabled() {
+                        Layer::Hidden
+                    } else {
+                        decide(&LayerInputs {
+                            autohide,
+                            foreground_maximized: fg_maximized,
+                            foreground_fullscreen: fg_fullscreen,
+                            hovered: reach,
+                            settings_open,
+                            menus_open,
+                            hide_when_unhovered,
+                        })
+                    };
                     let target_top = slide_target(resting_layer, rest_top, hidden_top);
                     slide.tick(
                         &renderer,

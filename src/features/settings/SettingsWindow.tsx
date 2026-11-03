@@ -17,6 +17,7 @@ import {
   type GlassbarSettings,
 } from "../../lib/shell";
 import { useGadgets } from "../gadgets/registry";
+import { HotkeyInput } from "./HotkeyInput";
 import { ControlCenterPane } from "./ControlCenterPane";
 import { Sidebar, type SettingsPane } from "./Sidebar";
 import { SettingsGroup, OptionRow } from "./OptionRow";
@@ -170,6 +171,15 @@ export function SettingsWindow() {
                 />
               </OptionRow>
               <SliderRow
+                label="Taskbar height"
+                value={settings.taskbarHeight}
+                min={48}
+                max={160}
+                step={2}
+                format={(value) => `${Math.round(value)} px`}
+                onChange={(taskbarHeight) => update({ taskbarHeight })}
+              />
+              <SliderRow
                 label="Corner radius"
                 value={settings.pillRadius}
                 min={0}
@@ -197,6 +207,20 @@ export function SettingsWindow() {
                 onChange={(iconGap) => update({ iconGap })}
               />
             </SettingsGroup>
+
+            <SettingsGroup title="Disable taskbar">
+              <OptionRow label="Toggle shortcut">
+                <HotkeyInput
+                  value={settings.disableHotkey}
+                  onChange={(disableHotkey) => update({ disableHotkey })}
+                />
+              </OptionRow>
+            </SettingsGroup>
+            <p className="settings-pane-note">
+              Press the shortcut anywhere in Windows to completely hide the
+              taskbar — hover and the reveal strip are ignored too; press it
+              again to bring it back. The default is Ctrl+Alt+Shift+H.
+            </p>
 
             <SettingsGroup title="Resize animation">
               <SliderRow
