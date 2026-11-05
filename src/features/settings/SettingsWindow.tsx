@@ -386,9 +386,9 @@ export function SettingsWindow() {
 
         {activePane.id === "liquid-glass" && (
           <>
-            <SettingsGroup title="Performance">
-              <OptionRow label="Quality">
-                <RadioGroup>
+            <SettingsGroup title="Performance" className="settings-card-padded">
+              <OptionRow className="settings-row-stacked" label="Quality">
+                <RadioGroup className="settings-quality-group">
                   {[
                     { value: "auto", label: "Auto" },
                     { value: "high", label: "High" },

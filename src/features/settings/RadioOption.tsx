@@ -2,11 +2,15 @@ import type { ReactNode } from "react";
 
 interface RadioGroupProps {
   children: ReactNode;
+  className?: string;
 }
 
-export function RadioGroup({ children }: RadioGroupProps) {
+export function RadioGroup({ children, className }: RadioGroupProps) {
   return (
-    <div role="radiogroup" className="settings-radio-group">
+    <div
+      role="radiogroup"
+      className={className ? `settings-radio-group ${className}` : "settings-radio-group"}
+    >
       {children}
     </div>
   );

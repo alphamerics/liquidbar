@@ -66,6 +66,7 @@ pub fn prewarm_menu_glass(
 /// the shared monitor capture (in-app glass; Glassbar's own menus are
 /// always global).
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn position_menu_glass(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, RendererState>,
@@ -94,10 +95,20 @@ pub fn position_menu_glass(
 }
 
 /// The webview's reconciliation sweep: reports the menu-glass keys it
-/// currently tracks. Any native surface whose key is missing gets closed —
-/// a hard guarantee that a lost close push can never leave a glass (e.g. a
-/// wifi panel) visible forever after a settings change.
+/// currently tracks. Any native surface OF THIS WINDOW whose key is
+/// missing gets closed — a hard guarantee that a lost close push can never
+/// leave a glass (e.g. a wifi panel) visible forever after a settings
+/// change. Scoped to the calling window so several webview windows
+/// sharing one manager never despawn each other's glass.
 #[tauri::command]
-pub fn sync_menu_glasses(state: tauri::State<'_, RendererState>, keys: Vec<String>) {
-    state.sync_menu_glasses(&keys);
+pub fn sync_menu_glasses(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, RendererState>,
+    keys: Vec<String>,
+) {
+    let host = window
+        .hwnd()
+        .map(|hwnd| hwnd.0 as isize)
+        .unwrap_or(0);
+    state.sync_menu_glasses(&keys, host);
 }

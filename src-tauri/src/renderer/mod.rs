@@ -111,6 +111,9 @@ pub struct RendererState {
     /// The user-configured pill corner radius at the default 68 px height
     /// (settings.pill_radius); the live radius scales with the pill height.
     pill_radius: Mutex<f32>,
+    /// The overlay window's handle, recorded at attach: surface syncs derive
+    /// their screen rects from it.
+    overlay: Mutex<Option<isize>>,
 }
 
 /// Which surface the resize spring animates. The menu arm is gone — menu
@@ -201,6 +204,7 @@ impl RendererState {
             attached_at: Mutex::new(None),
             resize_anim: Mutex::new((0.4, 0.5, 320.0)),
             pill_radius: Mutex::new(TASKBAR_PILL_RADIUS_DEFAULT_PX),
+            overlay: Mutex::new(None),
         }
     }
 
@@ -221,6 +225,7 @@ impl RendererState {
     /// Renders (or removes) a native liquid glass surface behind one menu.
     /// The `preview*` key convention routes to the taskbar's persistent
     /// hover-preview surface instead of a menu instance.
+    #[allow(clippy::too_many_arguments)]
     pub fn position_menu_glass(
         &self,
         overlay: HWND,
@@ -241,9 +246,11 @@ impl RendererState {
         )
     }
 
-    /// Delegates the webview's reconciliation sweep to the shared manager.
-    pub fn sync_menu_glasses(&self, keys: &[String]) {
-        self.menus.sync_glasses(keys);
+    /// Delegates the webview's reconciliation sweep to the shared manager,
+    /// scoped to the calling window (several webviews share the manager;
+    /// each sweep must only reconcile its own glass).
+    pub fn sync_menu_glasses(&self, keys: &[String], host: isize) {
+        self.menus.sync_glasses(keys, host);
     }
 
     /// Every hit rect the hit-test loop must honor: the open menus' (from
@@ -749,6 +756,7 @@ impl RendererState {
     pub fn attach_to_overlay(&self, overlay: HWND) -> Result<(), String> {
         *self.attached_at.lock().expect("attached-at lock poisoned") =
             Some(std::time::Instant::now());
+        *self.overlay.lock().expect("overlay lock poisoned") = Some(overlay.0 as isize);
         // The overlay can grow upward for menus; the glass always covers only
         // the bottom taskbar pill strip with capsule-rounded corners. The
         // strip's height follows the user-resizable taskbar height.

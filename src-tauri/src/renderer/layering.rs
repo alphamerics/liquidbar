@@ -43,8 +43,8 @@ use std::time::{Duration, Instant};
 use windows::Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
-        GetWindow, GetWindowLongW, SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, HWND_TOPMOST,
-        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_TOPMOST,
+        GetWindow, GetWindowLongW, SetWindowPos, GW_HWNDNEXT, GW_HWNDPREV, GWL_EXSTYLE,
+        HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_TOPMOST,
     },
 };
 
@@ -211,17 +211,19 @@ impl Layering {
             return;
         }
         self.last_check = Instant::now();
-        let (actually_topmost, in_chain) = unsafe { measure_z(overlay, state) };
+        let (actually_topmost, surface_above, in_chain) = unsafe { measure_z(overlay, state) };
         let surfaces = state.surface_hwnd_set();
-        let sane =
-            actually_topmost == self.topmost && (surfaces.is_empty() || in_chain == surfaces.len());
+        let sane = actually_topmost == self.topmost
+            && !surface_above
+            && (surfaces.is_empty() || in_chain == surfaces.len());
         if sane {
             self.bad_samples = 0;
             return;
         }
         self.bad_samples += 1;
         eprintln!(
-            "[taskbar] z-order desync: believed_topmost={} actual_topmost={} surfaces={} in_chain={in_chain} — repairing",
+            "[taskbar] z-order desync: believed_topmost={} actual_topmost={} \
+             surface_above_overlay={surface_above} surfaces={} in_chain={in_chain} — repairing",
             self.topmost, actually_topmost, surfaces.len()
         );
         if self.bad_samples >= 2 {
@@ -237,15 +239,53 @@ impl Layering {
     }
 }
 
-/// Reads the overlay's actual topmost style and counts the glass surfaces
-/// sitting directly beneath it in one consecutive chain — a surface
-/// anywhere above the overlay covers the DOM.
-unsafe fn measure_z(overlay: HWND, state: &RendererState) -> (bool, usize) {
+/// How far the bounded walk above the overlay searches for a stray glass
+/// surface. Healthy stacking keeps every surface directly beneath the
+/// overlay, so a surface above it sits within a handful of windows; the
+/// generous bound keeps the walk cheap even in a crowded topmost band.
+const ABOVE_WALK_LIMIT: usize = 64;
+
+/// Reads the overlay's stacking health: whether its topmost style matches
+/// expectations, whether any glass surface sits ABOVE the overlay (glass
+/// covering the DOM — the visible bug), and how many surfaces form one
+/// contiguous run beneath it.
+///
+/// Windows BETWEEN the overlay and the first surface are deliberately
+/// benign: the hover preview's thumbnail popup lives there by design
+/// (above the glass, beneath the DOM), and any other window that slots
+/// into the gap covers glass — never the DOM. The previous measurement
+/// required every surface to sit IMMEDIATELY beneath the overlay, so that
+/// by-design popup (and any stray flyout in the gap) read as a permanent
+/// "desync", firing the full re-stack repair every couple of seconds —
+/// every glass element shuffling z-order, visible as a recurring flicker.
+unsafe fn measure_z(overlay: HWND, state: &RendererState) -> (bool, bool, usize) {
     let style = GetWindowLongW(overlay, GWL_EXSTYLE) as u32;
     let actually_topmost = (style & WS_EX_TOPMOST.0) != 0;
     let surfaces = state.surface_hwnd_set();
-    let mut in_chain = 0usize;
+    // (a) A surface above the overlay covers the DOM: bounded walk up.
+    let mut surface_above = false;
+    let mut prev = GetWindow(overlay, GW_HWNDPREV).ok();
+    for _ in 0..ABOVE_WALK_LIMIT {
+        let Some(current) = prev else {
+            break;
+        };
+        if surfaces.contains(&(current.0 as isize)) {
+            surface_above = true;
+            break;
+        }
+        prev = GetWindow(current, GW_HWNDPREV).ok();
+    }
+    // (b) The surfaces beneath the overlay must form ONE contiguous run —
+    // but only from the first surface on. Skip whatever sits in the gap
+    // between the overlay and the glass (the thumbnail popup's home).
     let mut next = GetWindow(overlay, GW_HWNDNEXT).ok();
+    while let Some(current) = next {
+        if surfaces.contains(&(current.0 as isize)) {
+            break;
+        }
+        next = GetWindow(current, GW_HWNDNEXT).ok();
+    }
+    let mut in_chain = 0usize;
     while let Some(current) = next {
         if surfaces.contains(&(current.0 as isize)) {
             in_chain += 1;
@@ -254,7 +294,7 @@ unsafe fn measure_z(overlay: HWND, state: &RendererState) -> (bool, usize) {
             break;
         }
     }
-    (actually_topmost, in_chain)
+    (actually_topmost, surface_above, in_chain)
 }
 
 /// Raises the overlay into the topmost band with its glass directly

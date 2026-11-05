@@ -283,10 +283,10 @@ body.app-drag-active * {
   /* Double the vertical padding of the horizontal side. */
   box-sizing: border-box;
   height: 48px;
-  padding: 5px 4px;
+  padding: 1px 4px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   border-radius: 999px;
-  background: rgba(34, 42, 64, 0.3);
+  background: rgba(75, 75, 75, 0.3);
   flex-shrink: 0;
 }
 
@@ -1076,6 +1076,47 @@ body.app-drag-active * {
   border-radius: 50%;
 }
 
+/* A stacked row: the control sits on its own line beneath the label
+   (e.g. the Quality picker's padded capsule). */
+.settings-row-stacked {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+/* The Liquid Glass tab's Quality picker (Auto / High / Balanced /
+   Efficiency): a plain wrapping collection of tier pills beneath the
+   label; the padding lives on its Performance card instead. */
+.settings-quality-group {
+  align-self: stretch;
+  flex-wrap: wrap;
+  row-gap: 4px;
+}
+
+/* A card that carries the row padding itself (e.g. the Performance
+   card's Quality picker): inner rows drop their own padding so the
+   inset stays cohesive with the rest of the app (8px 14px). */
+.settings-card-padded {
+  padding: 8px 14px;
+}
+
+.settings-card-padded .settings-row {
+  padding: 0;
+}
+
+.settings-card-padded .settings-pane-note {
+  margin: 8px 0 0;
+}
+
+.settings-quality-group .settings-radio-option {
+  padding: 1px;
+  border-radius: 8px;
+}
+
+.settings-quality-group .settings-radio-option:hover {
+  background: rgba(127, 127, 127, 0.16);
+}
+
 @media (prefers-color-scheme: dark) {
   .settings-radio {
     border-color: rgba(255, 255, 255, 0.4);
@@ -1557,9 +1598,11 @@ body.app-drag-active * {
   flex-direction: column;
   gap: 2px;
   max-height: 300px;
-  /* The scrollbar's thumb border already insets the handle 7px from the
-     content, so keep the container's right padding at zero. */
-  padding: 8px 0 8px 8px;
+  /* Right padding mirrors the left so short lists (no scrollbar) don't run
+     flush against the glass edge. When a scrollbar does appear the visible
+     gap grows to padding + the thumb's 8px inset — slightly wider, still
+     balanced. */
+  padding: 8px;
   overflow-y: auto;
   cursor: default;
 }
@@ -1568,7 +1611,7 @@ body.app-drag-active * {
    separated by a slim divider. */
 .cc-sound {
   gap: 10px;
-  padding: 14px 0 14px 16px;
+  padding: 14px 16px;
 }
 
 .cc-sound-divider {

@@ -22,7 +22,12 @@ export function ContextMenu({ children, onOpenChange, onRefresh, onExit }: Conte
     [onOpenChange],
   );
 
-  useLiquidGlassSurface(open, `[data-liquid-menu="${menuId}"]`, 18, menuId);
+  useLiquidGlassSurface(
+    open,
+    `[data-liquid-menu="${menuId}"]`,
+    18,
+    menuId,
+  );
 
   const items: LiquidMenuItem[] = [
     { label: "Refresh shell", onSelect: onRefresh },
