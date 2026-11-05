@@ -18,8 +18,9 @@ use std::sync::Mutex;
 use windows::Win32::{
     Foundation::{HWND, RECT},
     UI::WindowsAndMessaging::{
-        GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowRect, SetWindowPos,
-        GWL_EXSTYLE, HWND_NOTOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_TOPMOST,
+        GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowLongW, GetWindowRect,
+        SetWindowPos, GWL_EXSTYLE, HWND_NOTOPMOST, SM_CXSCREEN, SWP_NOACTIVATE, SWP_NOMOVE,
+        SWP_NOSIZE, WS_EX_TOPMOST,
     },
 };
 
@@ -33,6 +34,41 @@ use glass_ui::MenuGlassManager;
 use glass_ui::MENU_REVEAL_INSTANT;
 
 const TASKBAR_PILL_RADIUS_DEFAULT_PX: f32 = 34.0;
+
+/// The pill glass's fixed canvas height: the surface window is created once
+/// at this height and never resized again — pill resizes are drawn by the
+/// shape engine INSIDE the canvas ([`GlassSurface::set_shape_rect_px`]),
+/// which turns every resize into a constant-buffer update. No swap-chain
+/// reallocation (the transparent flash it forces), no glass window resizes:
+/// a height drag plays back at the render loop's full rate, perfectly smooth.
+const PILL_CANVAS_HEIGHT_PX: f32 = crate::commands::taskbar::TASKBAR_HEIGHT_MAX_PX as f32;
+
+/// The pill canvas's geometry for a pill of `pill_w` x `pill_h` physical
+/// pixels: a full-screen-width strip at the canvas height, bottom-aligned
+/// with the overlay (the overlay's bottom edge is the pill's bottom edge)
+/// and centered on it. Because the pill is centered on the screen and the
+/// canvas is centered on the pill, the canvas never moves or resizes after
+/// creation — every later sync is a no-op.
+///
+/// Returns the canvas anchor (host-relative, applied by the next bounds
+/// sync) and the pill's shape rect in canvas-relative pixels.
+fn pill_canvas_geometry(pill_w: f32, pill_h: f32) -> (SurfaceAnchor, [f32; 4]) {
+    let canvas_w = unsafe { GetSystemMetrics(SM_CXSCREEN) } as f32;
+    let canvas_h = PILL_CANVAS_HEIGHT_PX;
+    let anchor = SurfaceAnchor::Rect {
+        offset_x: -(canvas_w - pill_w) / 2.0,
+        offset_y: crate::shell::overlay_height_px() as f32 - canvas_h,
+        width: canvas_w,
+        height: canvas_h,
+    };
+    let shape = [
+        (canvas_w - pill_w) / 2.0,
+        (canvas_h - pill_h).max(0.0),
+        pill_w,
+        pill_h,
+    ];
+    (anchor, shape)
+}
 
 /// The persistent hover-preview surface plus the state needed to skip
 /// redundant re-anchoring (which would restack topmost windows and flicker).
@@ -759,23 +795,24 @@ impl RendererState {
         *self.overlay.lock().expect("overlay lock poisoned") = Some(overlay.0 as isize);
         // The overlay can grow upward for menus; the glass always covers only
         // the bottom taskbar pill strip with capsule-rounded corners. The
-        // strip's height follows the user-resizable taskbar height.
+        // pill's height is user-resizable, so the glass draws the pill INSIDE
+        // a fixed-size canvas (shape-driven resizing): the surface window and
+        // its swap chain never resize, so height/width drags never flash.
         let pill_height = crate::shell::taskbar_height_px() as f32;
-        let radius = *self
-            .pill_radius
-            .lock()
-            .expect("pill radius lock poisoned");
+        let pill_width = crate::shell::taskbar_width_px(self.taskbar_content_width() as i32) as f32;
+        let radius = *self.pill_radius.lock().expect("pill radius lock poisoned");
+        let scaled_radius = pill_radius_for_height(radius, pill_height);
+        let (canvas_anchor, shape_rect) = pill_canvas_geometry(pill_width, pill_height);
         let config = GlassConfig {
-            corner_radius_px: pill_radius_for_height(radius, pill_height),
-            surface_anchor: SurfaceAnchor::BottomStrip {
-                height_px: pill_height,
-            },
+            corner_radius_px: scaled_radius,
+            surface_anchor: canvas_anchor,
             ..Default::default()
         };
         // Cap the pill's content-driven frame rate at 60fps. Reveal
         // and slide animations still render at the tick rate (the throttle
         // only applies to content-driven frames).
         let mut surface = GlassSurface::create(overlay.0 as isize, config)?;
+        surface.set_shape_rect_px(shape_rect, scaled_radius)?;
         surface.set_frame_cap(Some(60.0));
         // The pill is the one always-visible surface, so its pacing is
         // adaptive: content-driven frames render at the shared loop's full
@@ -980,10 +1017,7 @@ impl RendererState {
     /// Updates the taskbar pill's corner radius live. The value is the
     /// radius at the DEFAULT pill height; it scales with the live height.
     pub fn set_taskbar_corner_radius(&self, radius_px: f32) -> Result<(), String> {
-        *self
-            .pill_radius
-            .lock()
-            .expect("pill radius lock poisoned") = radius_px;
+        *self.pill_radius.lock().expect("pill radius lock poisoned") = radius_px;
         if let Some(surface) = self
             .surface
             .lock()
@@ -998,63 +1032,44 @@ impl RendererState {
         Ok(())
     }
 
-    /// Retargets the taskbar pill's glass to a new pill height (physical
-    /// pixels) without recreating the surface: the bottom-strip anchor is
-    /// recomputed against the overlay's fresh bounds (the window resize has
-    /// already landed by the time this runs) and the corner radius follows
-    /// the height. Cheap enough to run for every drag step.
-    pub fn set_taskbar_pill_height(&self, height_px: f32) -> Result<(), String> {
+    /// Retargets the taskbar pill's drawn shape to a new pill geometry
+    /// (physical pixels) and fully re-syncs the canvas anchor: the commit
+    /// path's re-assert after the window resize (the AppBar snap may have
+    /// adjusted the rect). Cheap — the canvas never resizes, so the sync is
+    /// position-only and the shape retarget is one constant-buffer update.
+    pub fn set_taskbar_pill_geometry(&self, width_px: f32, height_px: f32) -> Result<(), String> {
+        let (anchor, shape_rect) = pill_canvas_geometry(width_px, height_px);
         if let Some(surface) = self
             .surface
             .lock()
             .expect("renderer surface lock poisoned")
             .as_mut()
         {
-            surface.set_anchor(SurfaceAnchor::BottomStrip { height_px })?;
-            let radius = *self
-                .pill_radius
-                .lock()
-                .expect("pill radius lock poisoned");
-            surface.set_corner_radius(pill_radius_for_height(radius, height_px))?;
+            surface.set_anchor(anchor)?;
+            let radius = *self.pill_radius.lock().expect("pill radius lock poisoned");
+            surface.set_shape_rect_px(shape_rect, pill_radius_for_height(radius, height_px))?;
         }
         Ok(())
     }
 
-    /// Applies just the corner radius for an already-staged pill height:
-    /// on the drag's live path the geometry sync happens in the window
-    /// resize's own event pass (the anchor was staged before the window
-    /// operation), so a second full sync per step would double the
-    /// per-step GPU work and back up the main thread.
-    pub fn finish_taskbar_pill_height(&self, height_px: f32) -> Result<(), String> {
+    /// Stages the pill glass's geometry for a resize BEFORE the overlay
+    /// window is repositioned: the canvas anchor is updated quietly (the
+    /// reposition's own event pass applies it against the fresh bounds) and
+    /// the drawn shape is retargeted immediately — a pure constant-buffer
+    /// update with no window operation, so the glass never flashes and can
+    /// track a drag step-for-step. Cheap enough to run for every drag step.
+    pub fn stage_taskbar_pill_geometry(&self, width_px: f32, height_px: f32) {
+        let (anchor, shape_rect) = pill_canvas_geometry(width_px, height_px);
         if let Some(surface) = self
             .surface
             .lock()
             .expect("renderer surface lock poisoned")
             .as_mut()
         {
-            let radius = *self
-                .pill_radius
-                .lock()
-                .expect("pill radius lock poisoned");
-            surface.set_corner_radius(pill_radius_for_height(radius, height_px))?;
-        }
-        Ok(())
-    }
-
-    /// Stages a pill height BEFORE the overlay window is resized: only the
-    /// stored strip anchor is updated (no surface sync). The resize's own
-    /// event pass then re-derives the glass from the NEW anchor against the
-    /// NEW window bounds in the same window operation — anchoring only
-    /// after the resize renders one frame where the pill's strip (and its
-    /// corners) still has the old geometry, which reads as a flicker.
-    pub fn stage_taskbar_pill_height(&self, height_px: f32) {
-        if let Some(surface) = self
-            .surface
-            .lock()
-            .expect("renderer surface lock poisoned")
-            .as_mut()
-        {
-            surface.set_anchor_quiet(SurfaceAnchor::BottomStrip { height_px });
+            surface.set_anchor_quiet(anchor);
+            let radius = *self.pill_radius.lock().expect("pill radius lock poisoned");
+            let _ =
+                surface.set_shape_rect_px(shape_rect, pill_radius_for_height(radius, height_px));
         }
     }
 

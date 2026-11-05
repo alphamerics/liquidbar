@@ -106,9 +106,6 @@ pub fn sync_menu_glasses(
     state: tauri::State<'_, RendererState>,
     keys: Vec<String>,
 ) {
-    let host = window
-        .hwnd()
-        .map(|hwnd| hwnd.0 as isize)
-        .unwrap_or(0);
+    let host = window.hwnd().map(|hwnd| hwnd.0 as isize).unwrap_or(0);
     state.sync_menu_glasses(&keys, host);
 }

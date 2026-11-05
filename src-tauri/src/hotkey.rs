@@ -107,7 +107,11 @@ fn register_from_settings(
     for (modifiers, key, label) in requested
         .iter()
         .map(|&(modifiers, key)| (modifiers, key, "requested"))
-        .chain(fallback.iter().map(|&(modifiers, key)| (modifiers, key, "previous")))
+        .chain(
+            fallback
+                .iter()
+                .map(|&(modifiers, key)| (modifiers, key, "previous")),
+        )
     {
         if unsafe { RegisterHotKey(None, HOTKEY_ID, modifiers, key) }.is_ok() {
             eprintln!("[hotkey] toggle hotkey registered ({label})");
@@ -132,7 +136,11 @@ fn toggle(app: &tauri::AppHandle) {
 fn parse_hotkey(text: &str) -> Option<(HOT_KEY_MODIFIERS, u32)> {
     let mut modifiers = MOD_NOREPEAT;
     let mut key = None;
-    for token in text.split('+').map(str::trim).filter(|token| !token.is_empty()) {
+    for token in text
+        .split('+')
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
         match token.to_ascii_lowercase().as_str() {
             "ctrl" | "control" => modifiers |= MOD_CONTROL,
             "alt" => modifiers |= MOD_ALT,

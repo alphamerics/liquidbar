@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 use windows::Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
-        GetWindow, GetWindowLongW, SetWindowPos, GW_HWNDNEXT, GW_HWNDPREV, GWL_EXSTYLE,
+        GetWindow, GetWindowLongW, SetWindowPos, GWL_EXSTYLE, GW_HWNDNEXT, GW_HWNDPREV,
         HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, WS_EX_TOPMOST,
     },
 };
@@ -224,7 +224,9 @@ impl Layering {
         eprintln!(
             "[taskbar] z-order desync: believed_topmost={} actual_topmost={} \
              surface_above_overlay={surface_above} surfaces={} in_chain={in_chain} — repairing",
-            self.topmost, actually_topmost, surfaces.len()
+            self.topmost,
+            actually_topmost,
+            surfaces.len()
         );
         if self.bad_samples >= 2 {
             self.bad_samples = 0;

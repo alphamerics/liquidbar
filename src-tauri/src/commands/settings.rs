@@ -50,7 +50,14 @@ fn apply_settings(
     renderer: &RendererState,
     settings: GlassbarSettings,
 ) -> Result<(), String> {
-    let (previous_reserve, previous_radius, previous_hide_taskbar, previous_launch_on_startup, previous_height, previous_disable_hotkey) = {
+    let (
+        previous_reserve,
+        previous_radius,
+        previous_hide_taskbar,
+        previous_launch_on_startup,
+        previous_height,
+        previous_disable_hotkey,
+    ) = {
         let guard = state.lock().expect("settings lock poisoned");
         (
             guard.reserve_space,
@@ -106,25 +113,28 @@ fn apply_settings(
     // it too — proportionally, in the same reposition, exactly like the
     // drag path; the webview's width pipeline corrects the estimate after.
     if height_changed {
-        let height = settings.taskbar_height
-            .round()
-            .clamp(
-                crate::commands::taskbar::TASKBAR_HEIGHT_MIN_PX,
-                crate::commands::taskbar::TASKBAR_HEIGHT_MAX_PX,
-            ) as i32;
+        let height = settings.taskbar_height.round().clamp(
+            crate::commands::taskbar::TASKBAR_HEIGHT_MIN_PX,
+            crate::commands::taskbar::TASKBAR_HEIGHT_MAX_PX,
+        ) as i32;
         shell::set_taskbar_height_px(height);
         if previous_height >= 1.0 {
-            let scaled = (renderer.taskbar_content_width() * (height as f64 / previous_height))
-                .round();
+            let scaled =
+                (renderer.taskbar_content_width() * (height as f64 / previous_height)).round();
             renderer.set_taskbar_content_width(scaled);
             renderer.set_effective_taskbar_width(shell::taskbar_width_px(scaled as i32) as f64);
         }
         if let Some(window) = app.get_webview_window("main") {
             if let Ok(hwnd) = window.hwnd() {
                 let width = renderer.taskbar_content_width() as i32;
-                // Stage the glass anchor before the resize (see the resize
-                // drag's note): one consistent geometry step, no flash.
-                renderer.stage_taskbar_pill_height(height as f32);
+                // Stage the glass geometry before the resize (see the resize
+                // drag's note): the canvas anchor rides the resize's own
+                // event pass and the drawn shape retargets immediately —
+                // one consistent geometry step, no flash.
+                renderer.stage_taskbar_pill_geometry(
+                    shell::taskbar_width_px(width) as f32,
+                    height as f32,
+                );
                 let result = if settings.reserve_space {
                     shell::reposition_appbar(hwnd.0 as isize, width)
                 } else {
@@ -140,7 +150,10 @@ fn apply_settings(
                 renderer.set_applied_taskbar_width(landed);
             }
         }
-        if let Err(error) = renderer.set_taskbar_pill_height(height as f32) {
+        if let Err(error) = renderer.set_taskbar_pill_geometry(
+            shell::taskbar_width_px(renderer.taskbar_content_width() as i32) as f32,
+            height as f32,
+        ) {
             eprintln!("Could not retarget the glass pill: {error}");
         }
     }

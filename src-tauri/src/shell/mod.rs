@@ -345,8 +345,8 @@ fn data_file(app: &tauri::AppHandle, name: &str) -> Option<std::path::PathBuf> {
 }
 
 pub use appbar::{
-    overlay_bottom_y, overlay_height_px, reposition_live, set_taskbar_height_px,
-    taskbar_height_px, TASKBAR_HEIGHT_DEFAULT_PX,
+    overlay_bottom_y, overlay_height_px, reposition_live, set_taskbar_height_px, taskbar_height_px,
+    TASKBAR_HEIGHT_DEFAULT_PX,
 };
 pub use windows::cursor_visible;
 pub use windows::foreground_cover;

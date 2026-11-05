@@ -76,10 +76,7 @@ pub fn set_taskbar_content_width(
     // does a non-animated report (a pill-height consequence) — springing
     // on those is the "pill keeps bouncing after the drag ended" artifact.
     let previous_effective = renderer.set_effective_taskbar_width(width as f64);
-    let resize_anim = if !unchanged
-        && (previous_effective - width as f64).abs() >= 1.0
-        && animate
-    {
+    let resize_anim = if !unchanged && (previous_effective - width as f64).abs() >= 1.0 && animate {
         renderer.trigger_pill_resize_spring(
             SpringTarget::Pill,
             previous_effective,
@@ -102,6 +99,11 @@ pub fn set_taskbar_content_width(
     let Ok(hwnd) = window.hwnd() else {
         return;
     };
+    // Stage the glass geometry for the new width BEFORE the reposition (see
+    // set_taskbar_height): the canvas anchor rides the resize's own event
+    // pass and the drawn shape retargets immediately — a constant-buffer
+    // update inside the fixed canvas, so width changes never flash the glass.
+    renderer.stage_taskbar_pill_geometry(width as f32, shell::taskbar_height_px() as f32);
     let result = if reserve_space {
         // A width change must NOT unregister the AppBar: ABM_REMOVE lets the
         // real taskbar pop up and the shell then shoves the bar upward
@@ -201,11 +203,13 @@ pub fn set_taskbar_height(
         let Ok(hwnd) = window.hwnd() else {
             return Ok(());
         };
-        let width = width.unwrap_or(renderer.taskbar_content_width() as i32);
-        // Stage the new glass anchor BEFORE the window resize: the resize's
-        // own event pass then syncs the glass from the new anchor against
-        // the new bounds in one step (no wrong-geometry flash frame).
-        renderer.stage_taskbar_pill_height(height as f32);
+        let width =
+            shell::taskbar_width_px(width.unwrap_or(renderer.taskbar_content_width() as i32));
+        // Stage the new glass geometry BEFORE the window resize: the canvas
+        // anchor rides the resize's own event pass, and the drawn shape is
+        // retargeted right away — a constant-buffer update inside the glass's
+        // fixed canvas (no window ops, no swap-chain resize, no flash frame).
+        renderer.stage_taskbar_pill_geometry(width as f32, height as f32);
         // Mid-drag steps take the live fast path: a plain SetWindowPos, no
         // shell-synchronizing AppBar round-trip (that per-step latency is
         // the drag stutter). The commit below re-snaps the reservation.
@@ -217,15 +221,14 @@ pub fn set_taskbar_height(
             shell::reposition_unregistered(hwnd.0 as isize, width)
         };
         result?;
-        // Live step: the anchor was staged before the resize and the
-        // resize's event pass synced the geometry — only the radius needs
-        // applying. The commit path re-syncs fully below.
-        if let Err(error) = if commit {
-            renderer.set_taskbar_pill_height(height as f32)
-        } else {
-            renderer.finish_taskbar_pill_height(height as f32)
-        } {
-            eprintln!("Could not retarget the glass pill: {error}");
+        // The commit path re-asserts the full geometry after the reposition
+        // (the AppBar snap may have adjusted the rect). Live steps need
+        // nothing here: the shape already tracks the new size and the
+        // resize's event pass synced the canvas position.
+        if commit {
+            if let Err(error) = renderer.set_taskbar_pill_geometry(width as f32, height as f32) {
+                eprintln!("Could not retarget the glass pill: {error}");
+            }
         }
         // Record what the window ACTUALLY landed on (the AppBar snap may
         // adjust the rect) — the baseline the width pipeline's drift check

@@ -35,10 +35,7 @@ pub fn taskbar_height_px() -> i32 {
 /// Applies a new pill height for every consumer (AppBar reservation, overlay
 /// window height, glass anchor, hit-testing bands) to derive from.
 pub fn set_taskbar_height_px(height_px: i32) {
-    TASKBAR_HEIGHT.store(
-        height_px.max(1),
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    TASKBAR_HEIGHT.store(height_px.max(1), std::sync::atomic::Ordering::Relaxed);
 }
 
 pub const TASKBAR_FLOAT_MARGIN_PX: i32 = 8;
