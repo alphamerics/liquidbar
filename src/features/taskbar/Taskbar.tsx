@@ -258,6 +258,17 @@ const resizeWidthPump: { fn: (() => void) | null; lastWidth: number } = {
 const resizeMeasureOnly = { active: false };
 
 /**
+ * The height pursuit spring's liveness window. The DOM pursues the pointer
+ * through a spring during the resize drag (mirroring the native glass's
+ * pursuit), so the landed-window-size sync (see `useTaskbarHeightVar`) must
+ * stand down while the spring owns the height variables — otherwise the
+ * window's stepped size and the spring's smooth value would fight frame by
+ * frame. Each spring frame extends the window; after the spring settles it
+ * expires and the landed-size sync resumes (and self-corrects any drift).
+ */
+const resizeSpringUntil = { until: 0 };
+
+/**
  * Keeps the native hit-test loop informed of the taskbar's interactive
  * elements (overlay-relative physical rects). The overlay stays click-through
  * everywhere except these and the open menus, so clicks on empty pill areas
@@ -405,6 +416,14 @@ function useTaskbarHeightVar(): { current: number } {
       // alive forever — the width limit cycle.
       let lastSyncedHeight = -1;
       const sync = () => {
+        // During the resize drag (and until its pursuit spring settles) the
+        // spring owns the height variables: applying the landed window size
+        // here would fight the spring's smooth value frame by frame — the
+        // visible tug-of-war. The window expires shortly after the spring
+        // settles, and the sync self-corrects any residual drift then.
+        if (resizeDragActive.active || performance.now() < resizeSpringUntil.until) {
+          return;
+        }
         const menuSurfaceCss = MENU_SURFACE_HEIGHT_PX / (window.devicePixelRatio || 1);
         const cssHeight = window.innerHeight - menuSurfaceCss;
         if (cssHeight < 24) {
@@ -736,17 +755,22 @@ export function Taskbar({
 
   // ---- Top-edge resize drag (macOS-dock style) ----
   // Hovering the pill's top edge shows the ns-resize cursor; dragging up or
-  // down scales the pill live. Three ingredients keep it smooth:
+  // down scales the pill live. Four ingredients keep it smooth:
   // 1. The width is a PURE FUNCTION of the height: the content demand per
   //    unit scale is captured once at drag start and scaled by the zoom
   //    ratio — no feedback, no stale-baseline discontinuities.
-  // 2. The DOM leads optimistically at the full frame rate (the vars apply
-  //    the target instantly, so the content tracks the pointer) and the
-  //    landed window size corrects it a frame later (see
-  //    useTaskbarHeightVar) — the desync is bounded to one frame.
-  // 3. Live steps take the native fast path (no shell-synchronizing AppBar
-  //    round-trip) at 1px granularity, throttled only by the frame clock;
-  //    the commit does the full reposition and persists.
+  // 2. BOTH the DOM content and the native glass pursue the pointer through
+  //    the same critically damped spring (constants shared with
+  //    renderer/mod.rs's `pursuit_spring_constants`): the DOM height
+  //    variables integrate toward `pending` per frame and the native glass
+  //    pursues the streamed heights — the content and the glass move as one
+  //    smooth glide instead of stepping with each window resize.
+  // 3. The landed window size does NOT drive the height variables mid-drag
+  //    (see `resizeSpringUntil`): the spring leads, the window follows, and
+  //    the spring converges onto the pointer height after release.
+  // 4. Live steps take the native fast path (no shell-synchronizing AppBar
+  //    round-trip) at 1px granularity; the commit does the full reposition
+  //    and persists.
   const beginResizeDrag = useCallback(
     (event: ReactPointerEvent<HTMLDivElement>) => {
       if (event.button !== 0) {
@@ -779,7 +803,25 @@ export function Taskbar({
           : 0;
       let pending = Math.round(startHeight);
       let applied = pending;
-      let raf = 0;
+      let lastSent = pending;
+      let released = false;
+      // ---- Height pursuit spring (mirrors the native glass pursuit) ----
+      // Critically damped (no overshoot — a drag must track the pointer)
+      // at half the user's resize duration, integrated with the frame's
+      // real dt. Constants mirror renderer/mod.rs's pursuit_spring_constants.
+      let pursuitRaf = 0;
+      let pursuitLast = performance.now();
+      let springHeight = startHeight;
+      let springVelocity = 0;
+      let pursuitDurationMs = 320;
+      // The user's spring duration may have been re-tuned since boot; the
+      // constant refreshes whenever the fetch resolves (the spring reads it
+      // per frame, so a mid-drag update simply applies from then on).
+      void getSettings().then((settings) => {
+        if (settings && Number.isFinite(settings.resizeDuration) && settings.resizeDuration > 0) {
+          pursuitDurationMs = settings.resizeDuration;
+        }
+      });
       // Backpressure: the native command runs on the main thread (window
       // resize + glass re-sync + events), so fire-and-forget invokes at the
       // frame rate can enqueue faster than they execute — the visible
@@ -789,7 +831,6 @@ export function Taskbar({
       // final height.
       let inFlight = false;
       let commitQueued = false;
-      let lastSent = pending;
       const widthFor = (height: number, fromHeight: number): number | null => {
         if (widthBase > 0) {
           return Math.round(widthBase * (height / TASKBAR_BASE_HEIGHT_PX));
@@ -829,22 +870,37 @@ export function Taskbar({
             }
           });
       };
-      const apply = () => {
-        raf = 0;
-        // 1px steps at the display's frame rate; the DOM leads optimistically
-        // (it tracks the pointer) and the native side converges with
-        // backpressure — one command in flight, coalescing to the latest
-        // target, never a queue.
-        const height = Math.round(pending);
-        if (height === applied) {
-          return;
+      const springStep = () => {
+        pursuitRaf = 0;
+        const now = performance.now();
+        const dt = Math.min((now - pursuitLast) / 1000, 0.05);
+        pursuitLast = now;
+        const omega = (2 * Math.PI) / (Math.max(pursuitDurationMs * 0.5, 80) / 1000);
+        const zeta = 1;
+        const accel =
+          omega * omega * (pending - springHeight) - 2 * zeta * omega * springVelocity;
+        springVelocity += accel * dt;
+        springHeight += springVelocity * dt;
+        applyTaskbarHeightVars(springHeight);
+        // Stand down the landed-size sync while the spring runs.
+        resizeSpringUntil.until = now + 250;
+        // The native target stays the pointer height (1px quantized); the
+        // pump's backpressure coalesces while one command is in flight.
+        const target = Math.round(pending);
+        if (target !== applied) {
+          applied = target;
+          pump(false);
         }
-        applied = height;
-        // Optimistic DOM: the content rescales toward the target instantly;
-        // the landed window size re-syncs the vars a frame later, so a
-        // clamp/snap self-corrects.
-        applyTaskbarHeightVars(height);
-        pump(false);
+        const settled =
+          Math.abs(pending - springHeight) < 0.5 && Math.abs(springVelocity) < 8;
+        if (!settled || !released) {
+          pursuitRaf = requestAnimationFrame(springStep);
+        } else {
+          // Converged after release: land the exact pointer height and hand
+          // the height variables back to the landed-size sync.
+          applyTaskbarHeightVars(Math.round(pending));
+          resizeSpringUntil.until = 0;
+        }
       };
       resizeDragActive.active = true;
       resizeMeasureOnly.active = true;
@@ -857,24 +913,27 @@ export function Taskbar({
           ),
           TASKBAR_MAX_HEIGHT_PX,
         );
-        if (!raf) {
-          raf = requestAnimationFrame(apply);
+        if (!pursuitRaf) {
+          pursuitLast = performance.now();
+          pursuitRaf = requestAnimationFrame(springStep);
         }
       };
       const up = () => {
         window.removeEventListener("pointermove", move);
         window.removeEventListener("pointerup", up);
         window.removeEventListener("pointercancel", up);
-        if (raf) {
-          cancelAnimationFrame(raf);
-          raf = 0;
-        }
+        released = true;
         // Always finish with a commit: it persists the height (and applies
         // it natively when the last live step never landed), at the EXACT
         // pointer height. If a live command is still in flight, the commit
-        // is queued and lands after it, carrying the final height.
+        // is queued and lands after it, carrying the final height. The
+        // pursuit spring keeps integrating until it converges onto that
+        // height, then lands the exact value and stands down.
         applied = Math.round(pending);
-        applyTaskbarHeightVars(applied);
+        if (!pursuitRaf) {
+          pursuitLast = performance.now();
+          pursuitRaf = requestAnimationFrame(springStep);
+        }
         pump(true);
         resizeMeasureOnly.active = false;
         resizeDragActive.active = false;

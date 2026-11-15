@@ -127,11 +127,12 @@ fn apply_settings(
         if let Some(window) = app.get_webview_window("main") {
             if let Ok(hwnd) = window.hwnd() {
                 let width = renderer.taskbar_content_width() as i32;
-                // Stage the glass geometry before the resize (see the resize
+// Stage the glass geometry before the resize (see the resize
                 // drag's note): the canvas anchor rides the resize's own
-                // event pass and the drawn shape retargets immediately —
-                // one consistent geometry step, no flash.
-                renderer.stage_taskbar_pill_geometry(
+                // event pass and the drawn shape pursues the new geometry
+                // through the compositor's spring — one smooth glide, no
+                // flash.
+                renderer.stage_taskbar_pill_geometry_pursuit(
                     shell::taskbar_width_px(width) as f32,
                     height as f32,
                 );

@@ -184,6 +184,11 @@ pub fn set_taskbar_height(
         return Ok(());
     }
     if !unchanged {
+        // Mark the resize in flight BEFORE any window operation: the
+        // reposition's Moved|Resized event pass would otherwise restack and
+        // re-sync every glass surface mid-drag (the geometry below is
+        // stage-managed). The commit clears the flag after its full sync.
+        renderer.set_resizing(!commit);
         // The shell geometry derives from the atomic, so it must move first.
         shell::set_taskbar_height_px(height);
         // Keep the width bookkeeping aligned, so a later width report can
@@ -207,9 +212,12 @@ pub fn set_taskbar_height(
             shell::taskbar_width_px(width.unwrap_or(renderer.taskbar_content_width() as i32));
         // Stage the new glass geometry BEFORE the window resize: the canvas
         // anchor rides the resize's own event pass, and the drawn shape is
-        // retargeted right away — a constant-buffer update inside the glass's
-        // fixed canvas (no window ops, no swap-chain resize, no flash frame).
-        renderer.stage_taskbar_pill_geometry(width as f32, height as f32);
+        // retargeted through the compositor's pursuit spring — the glass
+        // GLIDES after the pointer at the render loop's rate instead of
+        // stepping with each window resize (no window ops on the glass, no
+        // swap-chain resize, no flash frame). Consecutive steps retarget
+        // the same spring, so the drag reads as one continuous motion.
+        renderer.stage_taskbar_pill_geometry_pursuit(width as f32, height as f32);
         // Mid-drag steps take the live fast path: a plain SetWindowPos, no
         // shell-synchronizing AppBar round-trip (that per-step latency is
         // the drag stutter). The commit below re-snaps the reservation.
@@ -222,9 +230,10 @@ pub fn set_taskbar_height(
         };
         result?;
         // The commit path re-asserts the full geometry after the reposition
-        // (the AppBar snap may have adjusted the rect). Live steps need
-        // nothing here: the shape already tracks the new size and the
-        // resize's event pass synced the canvas position.
+        // (the AppBar snap may have adjusted the rect). The re-assert itself
+        // retargets the pursuit spring, so a drag's motion glides into its
+        // final geometry instead of snapping the last few pixels; the
+        // settings path (no drag in flight) simply glides too.
         if commit {
             if let Err(error) = renderer.set_taskbar_pill_geometry(width as f32, height as f32) {
                 eprintln!("Could not retarget the glass pill: {error}");
@@ -240,6 +249,10 @@ pub fn set_taskbar_height(
         renderer.set_applied_taskbar_width(landed);
     }
     if commit {
+        // The resize is done: re-enable the overlay event pass's surface
+        // syncs (the full geometry sync above already re-asserted
+        // everything the drag suppressed).
+        renderer.set_resizing(false);
         let settings = state.lock().expect("settings lock poisoned").clone();
         shell::save_settings(&app, &settings);
         app.emit("settings-changed", crate::settings::full_json(&settings))

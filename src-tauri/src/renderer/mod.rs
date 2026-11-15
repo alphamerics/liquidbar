@@ -102,11 +102,17 @@ pub struct RendererState {
     /// the slide (and repaint) — translate_surfaces already keeps everything
     /// aligned during the slide.
     sliding: Mutex<bool>,
+    /// True while a taskbar resize (height drag or width reposition) is in
+    /// flight: the overlay fires Moved|Resized events per step, and a full
+    /// surface re-sync per event would restack topmost windows and repaint
+    /// mid-animation — exactly what the auto-hide slide already suppresses
+    /// with `sliding`. The glass geometry itself is stage-managed per step
+    /// (the animated shape rect), so the event pass has nothing to do.
+    resizing: Mutex<bool>,
     /// One persistent, warm surface for the hover previews. It is created
     /// collapsed and never destroyed: opening re-anchors it and replays the
     /// reveal, so its capture session never needs to warm up again — a fresh
     /// WGC session's first frame takes hundreds of milliseconds to arrive.
-    /// Shared via Arc so the resize spring can drive it from its own thread.
     preview_glass: std::sync::Arc<Mutex<Option<PreviewGlass>>>,
     /// The most recently applied shader settings. Every surface created
     /// afterwards (menus, previews) seeds from this, so glass that appears
@@ -133,10 +139,12 @@ pub struct RendererState {
     /// healing compares against THIS value — comparing against the requested
     /// width would fight the snap in an endless reposition loop.
     taskbar_applied_width: Mutex<i32>,
-    /// Live squash/stretch spring for the taskbar's resize animation, shared
-    /// with its animation thread via Arc. `generation` supersedes stale
-    /// threads when a new resize retriggers mid-flight.
-    pill_spring: std::sync::Arc<Mutex<PillSpring>>,
+    /// Live squash/stretch spring for the taskbar's resize animation: which
+    /// surface the compositor-integrated spring is currently driving. The
+    /// spring itself lives IN the compositor (integrated per render frame,
+    /// phase-aligned with composition); this only tracks the target so a new
+    /// resize for a DIFFERENT surface can snap the old one back to rest.
+    pill_spring_target: Mutex<Option<SpringTarget>>,
     /// When the renderer attached to the overlay; width reports inside the
     /// boot-settle window don't spawn resize springs.
     attached_at: Mutex<Option<std::time::Instant>>,
@@ -163,29 +171,6 @@ pub(crate) enum SpringTarget {
     Preview,
 }
 
-/// See [`RendererState::pill_spring`]: the live squash/stretch state of the
-/// taskbar's resize spring. The scale is anchored to the pill's bottom-center
-/// in the shader (x overshoots with the width change, y counter-squashes).
-struct PillSpring {
-    scale: (f32, f32),
-    velocity: (f32, f32),
-    active: bool,
-    generation: u64,
-    target: SpringTarget,
-}
-
-impl Default for PillSpring {
-    fn default() -> Self {
-        Self {
-            scale: (1.0, 1.0),
-            velocity: (0.0, 0.0),
-            active: false,
-            generation: 0,
-            target: SpringTarget::Pill,
-        }
-    }
-}
-
 /// Spring integration constants shared by the native glass spring (this
 /// file) and the DOM content spring (Taskbar.tsx) so both move as one:
 /// ω = 2π/duration (duration reads as one full oscillation period), damping
@@ -194,20 +179,23 @@ fn pill_spring_constants(bounce: f64, duration_ms: f64) -> (f64, f64) {
     glass_ui::spring_constants(bounce, duration_ms)
 }
 
-/// Integrates one spring axis toward 1 with a hard ceiling at 1.0: the pill
-/// may compress freely (values below 1) but never stretches beyond its
-/// surface, so the animation can never clip at the window edges — reaching
-/// 1 reflects the velocity with `restitution` instead, which reads as the
-/// pill squashing into place and bouncing back.
-fn pill_spring_step(
-    value: f32,
-    velocity: f32,
-    omega: f64,
-    zeta: f64,
-    restitution: f32,
-    dt: f32,
-) -> (f32, f32) {
-    glass_ui::spring_step(value, velocity, omega, zeta, restitution, dt)
+/// The squash/stretch spring's restitution: the velocity reflection at the
+/// 1.0 ceiling (the "squash into place" bounce), a fixed fraction of the
+/// user's bounce amount — mirrored by the DOM spring in Taskbar.tsx.
+fn pill_spring_restitution(bounce: f64) -> f32 {
+    (bounce.clamp(0.0, 1.0) * 0.6) as f32
+}
+
+/// The height-drag pursuit spring's constants: critically damped (ζ = 1, no
+/// restitution — a drag must track the pointer, not oscillate) at half the
+/// user's resize duration, so the glass glides after the pointer with a
+/// short, smooth lag instead of stepping. Both the native glass (the
+/// compositor's shape-transform spring) and the DOM content (Taskbar.tsx's
+/// height spring) derive the same constants and pursue as one.
+fn pursuit_spring_constants(duration_ms: f64) -> (f64, f64, f32) {
+    let pursuit_ms = (duration_ms * 0.5).max(80.0);
+    let (omega, zeta) = pill_spring_constants(0.0, pursuit_ms);
+    (omega, zeta, 0.0)
 }
 
 /// The pill's corner radius at a given pill height: the configured radius
@@ -236,7 +224,8 @@ impl RendererState {
             taskbar_content_width: Mutex::new(520.0),
             taskbar_effective_width: Mutex::new(520.0),
             taskbar_applied_width: Mutex::new(0),
-            pill_spring: std::sync::Arc::new(Mutex::new(PillSpring::default())),
+            pill_spring_target: Mutex::new(None),
+            resizing: Mutex::new(false),
             attached_at: Mutex::new(None),
             resize_anim: Mutex::new((0.4, 0.5, 320.0)),
             pill_radius: Mutex::new(TASKBAR_PILL_RADIUS_DEFAULT_PX),
@@ -278,7 +267,7 @@ impl RendererState {
             return self.position_preview_glass(overlay, rect, radius);
         }
         self.menus.position_menu_glass(
-            overlay, key, rect, radius, instant, glass_fade, group, spring, local,
+            overlay, key, rect, radius, instant, glass_fade, group, spring, local, None,
         )
     }
 
@@ -398,8 +387,10 @@ impl RendererState {
     /// Initial conditions never exceed 1.0 on either axis: growing starts
     /// compressed (x = from/to) with a velocity kick proportional to the
     /// size change, so bigger resizes rebound harder off the ceiling; a
-    /// shrink starts flush with a proportional inward kick. The ceiling
-    /// clamp in [`pill_spring_step`] keeps every value ≤ 1.
+    /// shrink starts flush with a proportional inward kick. The spring is
+    /// compositor-integrated (see [`liquid_glass::GlassSurface::
+    /// begin_pill_spring`]): its scale axes ceiling-clamp at 1, so every
+    /// value stays ≤ 1 and the shape can never clip.
     pub fn trigger_pill_resize_spring(
         &self,
         target: SpringTarget,
@@ -430,26 +421,23 @@ impl RendererState {
         // user's squash amount.
         let amplitude = (ratio - 1.0).abs().clamp(0.0, 0.35);
         let y_initial = (1.0 - amplitude * (0.5 + 0.5 * squash)) as f32;
-        let restitution = (bounce.clamp(0.0, 1.0) * 0.6) as f32;
-        let (spring, surface, preview_glass) = (
-            std::sync::Arc::clone(&self.pill_spring),
-            std::sync::Arc::clone(&self.surface),
-            std::sync::Arc::clone(&self.preview_glass),
-        );
-        let generation = {
-            let mut state = spring.lock().expect("pill spring lock poisoned");
-            // Self-heal on supersede: a new spring for a DIFFERENT target
-            // kills the active one (the old thread exits on its next tick
-            // when it sees this generation bump), and the outgoing target's
-            // glass would then stay stranded at its last mid-flight scale
-            // forever — the new spring never drives it. Snap that glass
-            // back to rest here, before the new generation starts. A
-            // same-target supersede needs no heal: the new thread takes the
-            // glass over seamlessly on its first tick.
-            if state.active && state.target != target {
-                match state.target {
-                    SpringTarget::Pill => {
-                        if let Some(glass) = surface
+        let restitution = pill_spring_restitution(bounce);
+        // Self-heal on supersede: a new spring for a DIFFERENT target kills
+        // the active one, and the outgoing target's glass would then stay
+        // stranded at its last mid-flight scale forever — the new spring
+        // never drives it. Snap that glass back to rest here, before the
+        // new spring starts. A same-target supersede needs no heal: the new
+        // kick replaces the spring state seamlessly on its first frame.
+        {
+            let mut state = self
+                .pill_spring_target
+                .lock()
+                .expect("pill spring target lock poisoned");
+            if state.map_or(false, |active| active != target) {
+                match *state {
+                    Some(SpringTarget::Pill) => {
+                        if let Some(glass) = self
+                            .surface
                             .lock()
                             .expect("renderer surface lock poisoned")
                             .as_mut()
@@ -457,8 +445,9 @@ impl RendererState {
                             glass.set_pill_scale_xy(1.0, 1.0);
                         }
                     }
-                    SpringTarget::Preview => {
-                        if let Some(glass) = preview_glass
+                    Some(SpringTarget::Preview) => {
+                        if let Some(glass) = self
+                            .preview_glass
                             .lock()
                             .expect("preview glass lock poisoned")
                             .as_mut()
@@ -466,105 +455,53 @@ impl RendererState {
                             glass.surface.set_pill_scale_xy(1.0, 1.0);
                         }
                     }
+                    None => {}
                 }
             }
-            state.generation += 1;
-            state.scale = (x_initial, y_initial);
-            state.velocity = (vx_initial, 0.0);
-            state.active = true;
-            state.target = target;
-            state.generation
-        };
-        std::thread::spawn(move || {
-            // Hard cap so a pathologically underdamped spring can't tick
-            // forever: four full oscillation periods.
-            let max_ticks = ((duration_ms.max(60.0) / 8.0) * 4.0) as u32;
-            for _ in 0..max_ticks {
-                // Integrate with the REAL inter-tick interval: sleep(8ms)
-                // actually sleeps ~15.6ms on Windows (timer granularity), and
-                // feeding the claimed 8ms into the integrator while twice the
-                // real time passes desyncs the glass from the DOM spring —
-                // visible as jitter.
-                let tick_start = std::time::Instant::now();
-                std::thread::sleep(std::time::Duration::from_millis(8));
-                let dt = tick_start.elapsed().as_secs_f32().min(0.05);
-                let (scale, settled) = {
-                    let mut state = spring.lock().expect("pill spring lock poisoned");
-                    if state.generation != generation || !state.active {
-                        return;
-                    }
-                    let (x, vx) = pill_spring_step(
-                        state.scale.0,
-                        state.velocity.0,
+            *state = Some(target);
+        }
+        // Kick the compositor's spring: it integrates per render frame (with
+        // the loop's real dt and DWM pacing) instead of the legacy host
+        // thread's sleep-granularity ticks — the glass and the DOM spring
+        // now move on the same frame clock.
+        match target {
+            SpringTarget::Pill => {
+                if let Some(glass) = self
+                    .surface
+                    .lock()
+                    .expect("renderer surface lock poisoned")
+                    .as_mut()
+                {
+                    glass.begin_pill_spring(
+                        x_initial,
+                        y_initial,
+                        vx_initial,
+                        0.0,
                         omega,
                         zeta,
                         restitution,
-                        dt,
                     );
-                    let (y, vy) = pill_spring_step(
-                        state.scale.1,
-                        state.velocity.1,
+                }
+            }
+            SpringTarget::Preview => {
+                if let Some(glass) = self
+                    .preview_glass
+                    .lock()
+                    .expect("preview glass lock poisoned")
+                    .as_mut()
+                {
+                    glass.surface.begin_pill_spring(
+                        x_initial,
+                        y_initial,
+                        vx_initial,
+                        0.0,
                         omega,
                         zeta,
                         restitution,
-                        dt,
                     );
-                    let settled = (x - 1.0).abs() < 0.002
-                        && (y - 1.0).abs() < 0.002
-                        && vx.abs() < 0.01
-                        && vy.abs() < 0.01;
-                    if settled {
-                        state.scale = (1.0, 1.0);
-                        state.velocity = (0.0, 0.0);
-                        state.active = false;
-                        ((1.0, 1.0), true)
-                    } else {
-                        state.scale = (x, y);
-                        state.velocity = (vx, vy);
-                        ((x, y), false)
-                    }
-                };
-                match target {
-                    SpringTarget::Pill => {
-                        let mut surface = surface.lock().expect("renderer surface lock poisoned");
-                        if let Some(glass) = surface.as_mut() {
-                            glass.set_pill_scale_xy(scale.0, scale.1);
-                        }
-                    }
-                    SpringTarget::Preview => {
-                        let mut preview =
-                            preview_glass.lock().expect("preview glass lock poisoned");
-                        if let Some(glass) = preview.as_mut() {
-                            glass.surface.set_pill_scale_xy(scale.0, scale.1);
-                        }
-                    }
-                }
-                if settled {
-                    return;
                 }
             }
-            // Cap reached: snap to rest and stop.
-            let mut state = spring.lock().expect("pill spring lock poisoned");
-            if state.generation == generation {
-                state.scale = (1.0, 1.0);
-                state.velocity = (0.0, 0.0);
-                state.active = false;
-            }
-            match target {
-                SpringTarget::Pill => {
-                    let mut surface = surface.lock().expect("renderer surface lock poisoned");
-                    if let Some(glass) = surface.as_mut() {
-                        glass.set_pill_scale_xy(1.0, 1.0);
-                    }
-                }
-                SpringTarget::Preview => {
-                    let mut preview = preview_glass.lock().expect("preview glass lock poisoned");
-                    if let Some(glass) = preview.as_mut() {
-                        glass.surface.set_pill_scale_xy(1.0, 1.0);
-                    }
-                }
-            }
-        });
+        }
         Some(ratio)
     }
 
@@ -613,6 +550,14 @@ impl RendererState {
     /// trigger full surface re-syncs mid-animation.
     pub fn set_sliding(&self, sliding: bool) {
         *self.sliding.lock().expect("sliding lock poisoned") = sliding;
+    }
+
+    /// Marks (or clears) a taskbar resize in flight: overlay Moved|Resized
+    /// events during the resize must not restack and re-sync every surface
+    /// (the glass geometry is stage-managed per step). Cleared by the
+    /// resize's commit, which then runs the full sync explicitly.
+    pub fn set_resizing(&self, resizing: bool) {
+        *self.resizing.lock().expect("resizing lock poisoned") = resizing;
     }
 
     /// Scales the pill's glass shape during the auto-hide reveal (1 = full).
@@ -1035,8 +980,10 @@ impl RendererState {
     /// Retargets the taskbar pill's drawn shape to a new pill geometry
     /// (physical pixels) and fully re-syncs the canvas anchor: the commit
     /// path's re-assert after the window resize (the AppBar snap may have
-    /// adjusted the rect). Cheap — the canvas never resizes, so the sync is
-    /// position-only and the shape retarget is one constant-buffer update.
+    /// adjusted the rect). The shape GLIDES into the new geometry via the
+    /// compositor's pursuit spring — a commit mid-drag continues the exact
+    /// motion the drag steps started instead of snapping the last few
+    /// pixels, and a settings-initiated height change glides too.
     pub fn set_taskbar_pill_geometry(&self, width_px: f32, height_px: f32) -> Result<(), String> {
         let (anchor, shape_rect) = pill_canvas_geometry(width_px, height_px);
         if let Some(surface) = self
@@ -1047,7 +994,14 @@ impl RendererState {
         {
             surface.set_anchor(anchor)?;
             let radius = *self.pill_radius.lock().expect("pill radius lock poisoned");
-            surface.set_shape_rect_px(shape_rect, pill_radius_for_height(radius, height_px))?;
+            let (omega, zeta, restitution) = pursuit_spring_constants(self.resize_anim_ms());
+            surface.set_shape_rect_px_animated(
+                shape_rect,
+                pill_radius_for_height(radius, height_px),
+                omega,
+                zeta,
+                restitution,
+            )?;
         }
         Ok(())
     }
@@ -1056,8 +1010,10 @@ impl RendererState {
     /// window is repositioned: the canvas anchor is updated quietly (the
     /// reposition's own event pass applies it against the fresh bounds) and
     /// the drawn shape is retargeted immediately — a pure constant-buffer
-    /// update with no window operation, so the glass never flashes and can
-    /// track a drag step-for-step. Cheap enough to run for every drag step.
+    /// update with no window operation, so the glass never flashes. Used by
+    /// the width pipeline: the shape snaps to the new width and the squash
+    /// spring (see [`Self::trigger_pill_resize_spring`]) supplies the
+    /// motion, matching the DOM content's spring exactly.
     pub fn stage_taskbar_pill_geometry(&self, width_px: f32, height_px: f32) {
         let (anchor, shape_rect) = pill_canvas_geometry(width_px, height_px);
         if let Some(surface) = self
@@ -1071,6 +1027,45 @@ impl RendererState {
             let _ =
                 surface.set_shape_rect_px(shape_rect, pill_radius_for_height(radius, height_px));
         }
+    }
+
+    /// The height drag's per-step staging: like [`Self::
+    /// stage_taskbar_pill_geometry`], but the drawn shape PURSUES the new
+    /// rect through the compositor's critically damped spring instead of
+    /// stepping to it. Each drag step retargets the pursuit (velocity
+    /// carried over), so the step stream reads as one smooth continuous
+    /// motion at the render loop's rate — the glass glides after the
+    /// pointer while the window itself moves in its native steps. The
+    /// canvas anchor is equivalent every step (the pill is screen-centered
+    /// and bottom-anchored), so the quiet anchor costs nothing.
+    pub fn stage_taskbar_pill_geometry_pursuit(&self, width_px: f32, height_px: f32) {
+        let (anchor, shape_rect) = pill_canvas_geometry(width_px, height_px);
+        if let Some(surface) = self
+            .surface
+            .lock()
+            .expect("renderer surface lock poisoned")
+            .as_mut()
+        {
+            surface.set_anchor_quiet(anchor);
+            let radius = *self.pill_radius.lock().expect("pill radius lock poisoned");
+            let (omega, zeta, restitution) = pursuit_spring_constants(self.resize_anim_ms());
+            let _ = surface.set_shape_rect_px_animated(
+                shape_rect,
+                pill_radius_for_height(radius, height_px),
+                omega,
+                zeta,
+                restitution,
+            );
+        }
+    }
+
+    /// The cached resize-spring duration (the third element of
+    /// `resize_anim`).
+    fn resize_anim_ms(&self) -> f64 {
+        self.resize_anim
+            .lock()
+            .expect("resize anim lock poisoned")
+            .2
     }
 
     /// Applies shared shader settings to every surface; each surface keeps
@@ -1129,8 +1124,13 @@ impl RendererState {
     pub fn sync_overlay_bounds(&self, overlay: HWND) -> Result<(), String> {
         // During the auto-hide slide the overlay fires Moved events every
         // step; translate_surfaces already keeps everything aligned, and a
-        // full re-sync here would repaint-storm the animation.
-        if *self.sliding.lock().expect("sliding lock poisoned") {
+        // full re-sync here would repaint-storm the animation. Same for a
+        // taskbar resize in flight: the geometry is stage-managed per step,
+        // and re-stacking mid-resize reads as flicker. The commit runs the
+        // full sync explicitly after clearing the flag.
+        if *self.sliding.lock().expect("sliding lock poisoned")
+            || *self.resizing.lock().expect("resizing lock poisoned")
+        {
             return Ok(());
         }
         if let Some(surface) = self

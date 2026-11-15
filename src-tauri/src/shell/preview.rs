@@ -7,7 +7,7 @@
 //! hover back to the webview (the image area sits above it, so the webview
 //! cannot see the cursor there) and forwards clicks as window activation.
 
-use std::sync::atomic::{AtomicBool, AtomicIsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::sync::{Mutex, OnceLock};
 
 use liquid_glass::ThumbnailSurface;
@@ -72,7 +72,18 @@ struct PreviewRequest {
     corner_radius: i32,
 }
 
-static PREVIEW_REQUEST: Mutex<Option<PreviewRequest>> = Mutex::new(None);
+/// The single queued request, tagged with the generation it was written
+/// under. Writes always replace the slot; every write schedules one
+/// main-thread closure.
+static PREVIEW_REQUEST: Mutex<Option<(u64, Option<PreviewRequest>)>> = Mutex::new(None);
+/// Bumped per write; each write schedules exactly one closure under that
+/// generation.
+static PREVIEW_GENERATION: AtomicU64 = AtomicU64::new(0);
+/// The newest generation whose request actually ran. A closure that finds
+/// the slot empty only hides when its own generation never ran — that keeps
+/// fast hover (open A, open B before A's closure runs) from turning into
+/// show-then-hide flip-flops.
+static PREVIEW_EXECUTED: AtomicU64 = AtomicU64::new(0);
 static PREVIEW_HWND: AtomicIsize = AtomicIsize::new(0);
 /// The persistent GPU thumbnail surface bound to the popup; created lazily
 /// with the popup and reused across previews (the swap chain resizes with
@@ -89,6 +100,13 @@ use tauri::Manager;
 /// `rect` the preview image area, both in the overlay's own coordinates.
 /// Runs on the main thread, which owns both the overlay and the popup and
 /// pumps their messages.
+///
+/// The request slot is a single mailbox, but generations make a queued
+/// update always carry the caller's CURRENT intent: a write from hover B
+/// replaces hover A's pending request; A's scheduled closure takes the slot
+/// and runs B's request (executed generation moves to the newest write).
+/// Closures that find the slot empty do nothing when their generation
+/// already ran, so rapid hovering can never order a run as show-then-hide.
 pub fn set_preview(
     window: &tauri::WebviewWindow,
     overlay_hwnd: isize,
@@ -97,29 +115,51 @@ pub fn set_preview(
     corner_radius: i32,
 ) -> Result<(), String> {
     let _ = APP_HANDLE.get_or_init(|| window.app_handle().clone());
-    *PREVIEW_REQUEST
-        .lock()
-        .expect("preview request lock poisoned") = match (target, rect) {
-        (Some(target), Some(rect)) => Some(PreviewRequest {
-            target,
-            rect,
-            corner_radius,
-        }),
-        _ => None,
+    let generation = {
+        let mut slot = PREVIEW_REQUEST
+            .lock()
+            .map_err(|_| "preview request lock poisoned")?;
+        let generation = PREVIEW_GENERATION.fetch_add(1, Ordering::Relaxed) + 1;
+        *slot = Some((
+            generation,
+            match (target, rect) {
+                (Some(target), Some(rect)) => Some(PreviewRequest {
+                    target,
+                    rect,
+                    corner_radius,
+                }),
+                _ => None,
+            },
+        ));
+        generation
     };
     window
         .run_on_main_thread(move || {
-            let request = PREVIEW_REQUEST
+            let taken = PREVIEW_REQUEST
                 .lock()
-                .expect("preview request lock poisoned")
-                .take();
-            match request {
-                Some(request) => {
-                    if let Err(error) = unsafe { show(overlay_hwnd, request) } {
-                        eprintln!("Glassbar window preview failed: {error}");
+                .ok()
+                .and_then(|mut slot| slot.take());
+            match taken {
+                Some((generation, request)) => {
+                    PREVIEW_EXECUTED.fetch_max(generation, Ordering::Relaxed);
+                    match request {
+                        Some(request) => {
+                            if let Err(error) = unsafe { show(overlay_hwnd, request) } {
+                                eprintln!("Glassbar window preview failed: {error}");
+                            }
+                        }
+                        None => hide(),
                     }
                 }
-                None => hide(),
+                // Empty slot: a concurrent closure already processed the
+                // newest request. Only hide if this closure's own generation
+                // never ran (our request was consumed without executing) —
+                // otherwise our scheduled hide would cancel a newer show.
+                None => {
+                    if PREVIEW_EXECUTED.load(Ordering::Relaxed) < generation {
+                        hide();
+                    }
+                }
             }
         })
         .map_err(|error| format!("Could not schedule the preview update: {error}"))
@@ -145,7 +185,15 @@ unsafe fn show(overlay: isize, request: PreviewRequest) -> Result<(), String> {
     // The GPU thumbnail surface is persistent; retarget it (which restarts
     // the capture when the source changed), restyle it and size it to the
     // fresh rect. Its shader owns the corner radius, so any value works.
-    let mut slot = THUMB.lock().expect("preview thumbnail lock poisoned");
+    // Lock failures are tolerated (retry on the next hover) rather than
+    // panicked on: this runs on the main thread, and a poisoned lock plus an
+    // unwinding closure would take the whole taskbar down.
+    let Ok(mut slot) = THUMB.lock() else {
+        // Poisoned: skip this preview (the next hover opens a fresh one)
+        // instead of panicking on the main thread.
+        eprintln!("Glassbar preview thumbnail lock poisoned");
+        return Ok(());
+    };
     let surface = if let Some(surface) = slot.as_ref() {
         surface
     } else {
