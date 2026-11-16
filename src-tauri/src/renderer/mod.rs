@@ -114,6 +114,13 @@ pub struct RendererState {
     /// reveal, so its capture session never needs to warm up again — a fresh
     /// WGC session's first frame takes hundreds of milliseconds to arrive.
     preview_glass: std::sync::Arc<Mutex<Option<PreviewGlass>>>,
+    /// The preview surface's compositor handle, cloned out under the preview
+    /// glass lock whenever the surface is (re)created. The resize spring's
+    /// kick and heal need ONLY this handle: acquiring the full preview_glass
+    /// mutex in the kick wedged the main thread against the other threads
+    /// contending for the same mutex (the hit-test loop's surface collection
+    /// and the Moved-event sync both cross it mid-slide).
+    preview_compositor: Mutex<Option<SharedCompositor>>,
     /// The most recently applied shader settings. Every surface created
     /// afterwards (menus, previews) seeds from this, so glass that appears
     /// long after startup still matches the saved settings.
@@ -219,6 +226,7 @@ impl RendererState {
             autohide: Mutex::new(false),
             sliding: Mutex::new(false),
             preview_glass: std::sync::Arc::new(Mutex::new(None)),
+            preview_compositor: Mutex::new(None),
             shader_params: Mutex::new(liquid_glass::GlassShaderParams::default()),
             topmost: AtomicBool::new(true),
             taskbar_content_width: Mutex::new(520.0),
@@ -267,7 +275,7 @@ impl RendererState {
             return self.position_preview_glass(overlay, rect, radius);
         }
         self.menus.position_menu_glass(
-            overlay, key, rect, radius, instant, glass_fade, group, spring, local, None,
+            overlay, key, rect, radius, instant, glass_fade, group, spring, local, None, None,
         )
     }
 
@@ -446,13 +454,24 @@ impl RendererState {
                         }
                     }
                     Some(SpringTarget::Preview) => {
-                        if let Some(glass) = self
-                            .preview_glass
+                        // The heal needs only the preview's compositor (the
+                        // snap-back is a constant-buffer write): taking the
+                        // full preview_glass mutex here wedged the main
+                        // thread against the lock's other contenders. A
+                        // spring parked AT rest with zero velocity settles
+                        // onto 1.0 on the compositor's next frame, which is
+                        // the same snap-back one frame later and needs no
+                        // engine context here.
+                        if let Some(compositor) = self
+                            .preview_compositor
                             .lock()
-                            .expect("preview glass lock poisoned")
-                            .as_mut()
+                            .expect("preview compositor lock poisoned")
+                            .as_ref()
                         {
-                            glass.surface.set_pill_scale_xy(1.0, 1.0);
+                            compositor
+                                .lock()
+                                .expect("D3D11 compositor lock poisoned")
+                                .begin_pill_spring(1.0, 1.0, 0.0, 0.0, 1.0, 1.0, 0.0);
                         }
                     }
                     None => {}
@@ -484,21 +503,29 @@ impl RendererState {
                 }
             }
             SpringTarget::Preview => {
-                if let Some(glass) = self
-                    .preview_glass
+                // The kick takes ONLY the preview's compositor handle (a
+                // clone kept separately): acquiring the full preview_glass
+                // mutex here wedged the main thread. The compositor lock
+                // itself is only ever held briefly (per-present) by the
+                // render loop.
+                if let Some(compositor) = self
+                    .preview_compositor
                     .lock()
-                    .expect("preview glass lock poisoned")
-                    .as_mut()
+                    .expect("preview compositor lock poisoned")
+                    .as_ref()
                 {
-                    glass.surface.begin_pill_spring(
-                        x_initial,
-                        y_initial,
-                        vx_initial,
-                        0.0,
-                        omega,
-                        zeta,
-                        restitution,
-                    );
+                    compositor
+                        .lock()
+                        .expect("D3D11 compositor lock poisoned")
+                        .begin_pill_spring(
+                            x_initial,
+                            y_initial,
+                            vx_initial,
+                            0.0,
+                            omega,
+                            zeta,
+                            restitution,
+                        );
                 }
             }
         }
@@ -788,6 +815,10 @@ impl RendererState {
                 // the first preview actually shows.
                 preview.pause_after_next_present();
                 *self
+                    .preview_compositor
+                    .lock()
+                    .expect("preview compositor lock poisoned") = Some(preview.compositor());
+                *self
                     .preview_glass
                     .lock()
                     .expect("preview glass lock poisoned") = Some(PreviewGlass {
@@ -871,91 +902,108 @@ impl RendererState {
                 surface.set_reveal(false, MENU_REVEAL_INSTANT);
                 // Warm the capture session with a single frame, then stop.
                 surface.pause_after_next_present();
-                preview.insert(PreviewGlass {
+                let compositor = surface.compositor();
+                let inserted = preview.insert(PreviewGlass {
                     surface,
                     rect,
                     radius,
-                })
+                });
+                *self
+                    .preview_compositor
+                    .lock()
+                    .expect("preview compositor lock poisoned") = Some(compositor);
+                inserted
             }
         };
         // A visible preview renders (throttled); a parked one does not.
-        preview.surface.set_paused(false);
-        let moved = !preview
-            .rect
-            .iter()
-            .zip(rect.iter())
-            .all(|(a, b)| (a - b).abs() < 2.0);
-        if moved {
-            preview
-                .surface
-                .set_anchor(SurfaceAnchor::Rect {
-                    offset_x: rect[0],
-                    offset_y: rect[1],
-                    width: rect[2],
-                    height: rect[3],
-                })
-                .map_err(|error| format!("Could not move the preview glass: {error}"))?;
-            preview.rect = rect;
-            // The SDF's corner radius is normalized to the surface height,
-            // which just changed (the surface is pre-created at 1x1 and
-            // clamped to a full capsule) — re-apply it explicitly.
-            preview
-                .surface
-                .set_corner_radius(radius)
-                .map_err(|error| format!("Could not round the preview glass: {error}"))?;
-            preview.radius = radius;
-            // The re-anchor restacked the glass surface above the thumbnail
-            // popup; put the popup back between the glass and the overlay.
-            if let Err(error) = crate::shell::preview::restack(overlay.0 as isize) {
-                eprintln!("Glassbar preview restack failed: {error}");
+        // Everything below runs UNDER the preview_glass lock, so the resize
+        // spring's kick is DEFERRED to after this scope: the kick re-enters
+        // this state (its heal arm and its kick both touch preview state),
+        // and a std Mutex locked twice on the same thread deadlocks the
+        // caller against itself — which froze the main thread on every
+        // preview appearance.
+        let (_moved, spring) = {
+            preview.surface.set_paused(false);
+            let moved = !preview
+                .rect
+                .iter()
+                .zip(rect.iter())
+                .all(|(a, b)| (a - b).abs() < 2.0);
+            if moved {
+                preview
+                    .surface
+                    .set_anchor(SurfaceAnchor::Rect {
+                        offset_x: rect[0],
+                        offset_y: rect[1],
+                        width: rect[2],
+                        height: rect[3],
+                    })
+                    .map_err(|error| format!("Could not move the preview glass: {error}"))?;
+                preview.rect = rect;
+                // The SDF's corner radius is normalized to the surface height,
+                // which just changed (the surface is pre-created at 1x1 and
+                // clamped to a full capsule) — re-apply it explicitly.
+                preview
+                    .surface
+                    .set_corner_radius(radius)
+                    .map_err(|error| format!("Could not round the preview glass: {error}"))?;
+                preview.radius = radius;
+                // The re-anchor restacked the glass surface above the thumbnail
+                // popup; put the popup back between the glass and the overlay.
+                if let Err(error) = crate::shell::preview::restack(overlay.0 as isize) {
+                    eprintln!("Glassbar preview restack failed: {error}");
+                }
             }
-        }
-        if (preview.radius - radius).abs() >= 0.5 {
-            preview
-                .surface
-                .set_corner_radius(radius)
-                .map_err(|error| format!("Could not round the preview glass: {error}"))?;
-            preview.radius = radius;
-        }
-        // No reveal animation: the preview glass appears fully open and the
-        // resize spring provides the scale-up bounce, exactly like the
-        // taskbar pill's resize animation.
-        preview.surface.set_reveal(true, MENU_REVEAL_INSTANT);
-        if moved {
+            if (preview.radius - radius).abs() >= 0.5 {
+                preview
+                    .surface
+                    .set_corner_radius(radius)
+                    .map_err(|error| format!("Could not round the preview glass: {error}"))?;
+                preview.radius = radius;
+            }
+            // No reveal animation: the preview glass appears fully open and the
+            // resize spring provides the scale-up bounce, exactly like the
+            // taskbar pill's resize animation.
+            preview.surface.set_reveal(true, MENU_REVEAL_INSTANT);
+            // Record the preview's hit rect in screen coordinates so the
+            // hit-test loop catches clicks on it while it is open.
+            let mut host = RECT::default();
+            unsafe {
+                let _ = GetWindowRect(overlay, &mut host);
+            }
+            let hit_rect = [
+                host.left + rect[0] as i32,
+                host.top + rect[1] as i32,
+                host.left + (rect[0] + rect[2]) as i32,
+                host.top + (rect[1] + rect[3]) as i32,
+            ];
+            *self
+                .preview_hit_rect
+                .lock()
+                .expect("preview rect lock poisoned") = Some(hit_rect);
+            *self
+                .preview_open
+                .lock()
+                .expect("preview open lock poisoned") = true;
             // Every appearance or re-anchor plays the scale-up bounce. A
             // width-ratio spring would be a no-op here (re-anchors keep the
             // preview's own width), so the spring always starts compressed
-            // at 0.9 and bounces into the full size.
+            // at 0.9 and bounces into the full size. Returned, not kicked:
+            // the kick below runs after this lock scope ends.
+            let spring = moved.then(|| (rect[2] as f64 * 0.9, rect[2] as f64));
+            (moved, spring)
+        };
+        if let Some((from_w, to_w)) = spring {
             let (squash, bounce, duration_ms) = self.resize_anim_params();
             self.trigger_pill_resize_spring(
                 SpringTarget::Preview,
-                rect[2] as f64 * 0.9,
-                rect[2] as f64,
+                from_w,
+                to_w,
                 squash,
                 bounce,
                 duration_ms,
             );
         }
-        // Record the preview's hit rect in screen coordinates so the hit-test
-        // loop catches clicks on it while it is open.
-        let mut host = RECT::default();
-        unsafe {
-            let _ = GetWindowRect(overlay, &mut host);
-        }
-        let hit_rect = [
-            host.left + rect[0] as i32,
-            host.top + rect[1] as i32,
-            host.left + (rect[0] + rect[2]) as i32,
-            host.top + (rect[1] + rect[3]) as i32,
-        ];
-        *self
-            .preview_hit_rect
-            .lock()
-            .expect("preview rect lock poisoned") = Some(hit_rect);
-        *self
-            .preview_open
-            .lock()
-            .expect("preview open lock poisoned") = true;
         Ok(())
     }
 
@@ -1111,6 +1159,10 @@ impl RendererState {
 
     pub fn destroy_surface(&self) {
         self.menus.destroy();
+        *self
+            .preview_compositor
+            .lock()
+            .expect("preview compositor lock poisoned") = None;
         self.preview_glass
             .lock()
             .expect("preview glass lock poisoned")

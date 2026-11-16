@@ -18,7 +18,7 @@ use tauri::{Emitter, Manager};
 use windows::Win32::{
     Foundation::HWND,
     UI::WindowsAndMessaging::{
-        SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
+        SetWindowPos, HWND_TOPMOST, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOSIZE, SWP_NOZORDER,
     },
 };
 
@@ -125,6 +125,14 @@ impl Slide {
             let dy = new_top - *last_applied;
             if dy != 0 {
                 unsafe {
+                    // ASYNCWINDOWPOS: this loop does not own the overlay, so
+                    // a plain SetWindowPos here is a SENT cross-thread
+                    // request that blocks until the main thread pumps — and
+                    // a pending request wedges the main thread's own
+                    // same-thread window ops on the same windows (the
+                    // preview push's re-anchor deadlocked exactly that way).
+                    // Posting asynchronously keeps the slide fluid and the
+                    // main thread free.
                     let _ = SetWindowPos(
                         hwnd,
                         HWND_TOPMOST,
@@ -132,7 +140,7 @@ impl Slide {
                         new_top,
                         0,
                         0,
-                        SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER,
+                        SWP_NOACTIVATE | SWP_NOSIZE | SWP_NOZORDER | SWP_ASYNCWINDOWPOS,
                     );
                 }
                 state.translate_surfaces(dy);

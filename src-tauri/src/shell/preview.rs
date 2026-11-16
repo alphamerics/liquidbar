@@ -6,8 +6,17 @@
 //! never activates, and stays out of alt-tab. The popup reports its own mouse
 //! hover back to the webview (the image area sits above it, so the webview
 //! cannot see the cursor there) and forwards clicks as window activation.
+//!
+//! Threading: the main thread owns the popup and does only window operations
+//! (placement, show/hide, the hover report). EVERY thumbnail surface
+//! operation — creating the D3D/DComposition pipeline, retargeting the
+//! capture, resizing the swap chain, and the teardown — runs on a dedicated
+//! worker: those calls synchronize with the Windows capture pipeline and
+//! DWM, and a wedged pipeline must stall only the worker, never the
+//! taskbar's main thread (the whole app once froze exactly at the hide).
 
 use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
+use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
 
 use liquid_glass::ThumbnailSurface;
@@ -98,8 +107,9 @@ use tauri::Manager;
 
 /// Shows (or hides) the live preview. `target` is the app window's HWND and
 /// `rect` the preview image area, both in the overlay's own coordinates.
-/// Runs on the main thread, which owns both the overlay and the popup and
-/// pumps their messages.
+/// Schedules one main-thread closure (which owns both the overlay and the
+/// popup and pumps their messages); the closure does the window operations
+/// and hands the thumbnail-surface work to the surface worker.
 ///
 /// The request slot is a single mailbox, but generations make a queued
 /// update always carry the caller's CURRENT intent: a write from hover B
@@ -135,19 +145,12 @@ pub fn set_preview(
     };
     window
         .run_on_main_thread(move || {
-            let taken = PREVIEW_REQUEST
-                .lock()
-                .ok()
-                .and_then(|mut slot| slot.take());
+            let taken = PREVIEW_REQUEST.lock().ok().and_then(|mut slot| slot.take());
             match taken {
                 Some((generation, request)) => {
                     PREVIEW_EXECUTED.fetch_max(generation, Ordering::Relaxed);
                     match request {
-                        Some(request) => {
-                            if let Err(error) = unsafe { show(overlay_hwnd, request) } {
-                                eprintln!("Glassbar window preview failed: {error}");
-                            }
-                        }
+                        Some(request) => unsafe { place(overlay_hwnd, request) },
                         None => hide(),
                     }
                 }
@@ -165,11 +168,64 @@ pub fn set_preview(
         .map_err(|error| format!("Could not schedule the preview update: {error}"))
 }
 
-unsafe fn show(overlay: isize, request: PreviewRequest) -> Result<(), String> {
-    let preview = ensure_window()?;
+/// One queued thumbnail-surface operation. The single worker runs them in
+/// arrival order, which preserves the main thread's intent order (the
+/// generation mailbox guarantees exactly one closure — hence one job — per
+/// write, and the event loop runs closures in write order).
+enum SurfaceJob {
+    Show {
+        popup: isize,
+        request: PreviewRequest,
+    },
+    Hide,
+}
+
+static SURFACE_JOBS: OnceLock<Mutex<mpsc::Sender<SurfaceJob>>> = OnceLock::new();
+
+/// Hands `job` to the surface worker, spawning it on first use. The send
+/// cannot meaningfully fail: a dead worker (a panic already doomed the
+/// process under the release profile) only drops the job.
+fn enqueue_surface(job: SurfaceJob) {
+    let sender = SURFACE_JOBS.get_or_init(|| {
+        let (sender, receiver) = mpsc::channel::<SurfaceJob>();
+        std::thread::Builder::new()
+            .name("glassbar-preview-surface".to_owned())
+            .spawn(move || {
+                while let Ok(job) = receiver.recv() {
+                    match job {
+                        SurfaceJob::Show { popup, request } => apply_show(popup, request),
+                        SurfaceJob::Hide => apply_hide(),
+                    }
+                }
+            })
+            .expect("could not spawn the preview surface worker");
+        Mutex::new(sender)
+    });
+    if let Ok(sender) = sender.lock() {
+        let _ = sender.send(job);
+    }
+}
+
+/// The MAIN-THREAD half of showing a preview: window operations only
+/// (create/reposition the popup). Everything that touches the thumbnail's
+/// GPU/capture state is handed to the surface worker (`SurfaceJob`) —
+/// WGC object creation, `ResizeBuffers` (which waits on the DWM) and the
+/// capture pipeline's own synchronization must never run where a stall
+/// freezes the whole taskbar: the worker stalls alone, and the next hover
+/// retries. This is the same hazard class the reaper and the detached
+/// capture starts already fence off; the show/hide surface ops were the
+/// last main-thread participants left.
+unsafe fn place(overlay: isize, request: PreviewRequest) {
+    let preview = match ensure_window() {
+        Ok(preview) => preview,
+        Err(error) => {
+            eprintln!("Glassbar window preview failed: {error}");
+            return;
+        }
+    };
     let mut host = RECT::default();
     let _ = GetWindowRect(HWND(overlay as *mut _), &mut host);
-    SetWindowPos(
+    if let Err(error) = SetWindowPos(
         preview,
         HWND_TOPMOST,
         host.left + request.rect[0],
@@ -177,31 +233,38 @@ unsafe fn show(overlay: isize, request: PreviewRequest) -> Result<(), String> {
         request.rect[2],
         request.rect[3],
         SWP_NOACTIVATE | SWP_SHOWWINDOW,
-    )
-    .map_err(|error| format!("Could not place the preview window: {error}"))?;
-
+    ) {
+        eprintln!("Glassbar window preview failed: could not place the preview window: {error}");
+        return;
+    }
     CURRENT_TARGET.store(request.target, Ordering::Relaxed);
+    enqueue_surface(SurfaceJob::Show {
+        popup: preview.0 as isize,
+        request,
+    });
+}
 
-    // The GPU thumbnail surface is persistent; retarget it (which restarts
-    // the capture when the source changed), restyle it and size it to the
-    // fresh rect. Its shader owns the corner radius, so any value works.
-    // Lock failures are tolerated (retry on the next hover) rather than
-    // panicked on: this runs on the main thread, and a poisoned lock plus an
-    // unwinding closure would take the whole taskbar down.
+/// The worker half of showing: all thumbnail surface state (create,
+/// retarget, restyle, resize, show). The GPU thumbnail surface is
+/// persistent; retargeting restarts the capture when the source changed.
+/// Its shader owns the corner radius, so any value works. Every failure is
+/// tolerated (retry on the next hover) rather than panicked on, and none
+/// escalates: a failed preview leaves an empty popup at worst.
+fn apply_show(popup: isize, request: PreviewRequest) {
     let Ok(mut slot) = THUMB.lock() else {
         // Poisoned: skip this preview (the next hover opens a fresh one)
-        // instead of panicking on the main thread.
+        // instead of panicking.
         eprintln!("Glassbar preview thumbnail lock poisoned");
-        return Ok(());
+        return;
     };
     let surface = if let Some(surface) = slot.as_ref() {
         surface
     } else {
-        match ThumbnailSurface::create(preview.0 as isize) {
+        match ThumbnailSurface::create(popup) {
             Ok(surface) => slot.get_or_insert(surface),
             Err(error) => {
                 eprintln!("Glassbar preview thumbnail failed to create: {error}");
-                return Ok(());
+                return;
             }
         }
     };
@@ -213,18 +276,13 @@ unsafe fn show(overlay: isize, request: PreviewRequest) -> Result<(), String> {
         eprintln!("Glassbar preview thumbnail resize failed: {error}");
     }
     surface.set_visible(true);
-    Ok(())
 }
 
+/// The MAIN-THREAD half of hiding: the popup's visibility and the hover
+/// report only. The capture teardown (which synchronizes with the capture
+/// pipeline — a wedged pipeline must never be waited on here) runs on the
+/// surface worker, after this job in the queue.
 fn hide() {
-    if let Ok(slot) = THUMB.lock() {
-        if let Some(surface) = slot.as_ref() {
-            surface.set_visible(false);
-            if let Err(error) = surface.set_source(0) {
-                eprintln!("Glassbar preview thumbnail release failed: {error}");
-            }
-        }
-    }
     CURRENT_TARGET.store(0, Ordering::Relaxed);
     let hwnd = PREVIEW_HWND.load(Ordering::Relaxed);
     if hwnd != 0 {
@@ -234,6 +292,20 @@ fn hide() {
     }
     if MOUSE_INSIDE.swap(false, Ordering::Relaxed) {
         emit_hover(false);
+    }
+    enqueue_surface(SurfaceJob::Hide);
+}
+
+/// The worker half of hiding: stops the capture session and detaches the
+/// source, so the capture pipeline idles with the hidden preview.
+fn apply_hide() {
+    if let Ok(slot) = THUMB.lock() {
+        if let Some(surface) = slot.as_ref() {
+            surface.set_visible(false);
+            if let Err(error) = surface.set_source(0) {
+                eprintln!("Glassbar preview thumbnail release failed: {error}");
+            }
+        }
     }
 }
 

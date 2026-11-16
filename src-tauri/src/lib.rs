@@ -217,8 +217,37 @@ fn setup(app: &mut App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Logs every panic with a backtrace to stderr AND a file under the
+/// user's local app data: a panic on a background thread silently kills
+/// just that thread (poisoning every lock it held, which turns later
+/// `expect`s into cascading panics), and one on the main thread takes the
+/// whole app down. Either way the trace must land somewhere the user can
+/// hand back.
+fn install_panic_hook() {
+    let dir = std::env::var_os("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir)
+        .join("Glassbar");
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join("panics.log");
+    std::panic::set_hook(Box::new(move |info| {
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        let message = format!(
+            "[{}] Glassbar panic: {info}\n{backtrace}\n",
+            chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f")
+        );
+        eprintln!("{message}");
+        let _ = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut file| std::io::Write::write_all(&mut file, message.as_bytes()));
+    }));
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    install_panic_hook();
     let app = tauri::Builder::default()
         .manage(RendererState::new())
         .manage(ShellState::default())
