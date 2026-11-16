@@ -14,6 +14,7 @@ pub mod settings;
 pub mod shell;
 pub mod taskbar;
 pub mod tray;
+pub mod updates;
 
 pub use dnd::*;
 pub use gadgets::*;
@@ -27,3 +28,4 @@ pub use settings::*;
 pub use shell::*;
 pub use taskbar::*;
 pub use tray::*;
+pub use updates::*;

@@ -1,0 +1,103 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    env:
+      DEPLOY_CERT_PASSWORD: ${{ secrets.WINDOWS_CERT_PASSWORD }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout glassbar
+        uses: actions/checkout@v4
+
+      - name: Checkout sibling crates (Cargo [patch] targets)
+        uses: actions/checkout@v4
+        with:
+          repository: alphamerics/liquid-glass
+          path: liquid-glass
+
+      - name: Checkout glass-ui
+        uses: actions/checkout@v4
+        with:
+          repository: alphamerics/glass-ui
+          path: glass-ui
+
+      - name: Checkout deploy (installer)
+        uses: actions/checkout@v4
+        with:
+          repository: alphamerics/deploy
+          path: deploy
+
+      - name: Install Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Rust (msvc)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore cargo caches
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: glassbar/src-tauri -> target
+          prefix-key: glassbar
+
+      - name: Build Glassbar
+        working-directory: glassbar
+        run: npm ci && npm run tauri build -- --no-bundle
+
+      - name: Import code-signing certificate
+        env:
+          WINDOWS_CERT_PFX: ${{ secrets.WINDOWS_CERT_PFX }}
+        run: |
+          [IO.File]::WriteAllBytes("$env:TEMP\cert.pfx", [Convert]::FromBase64String($env:WINDOWS_CERT_PFX))
+          $pw = ConvertTo-SecureString -String $env:DEPLOY_CERT_PASSWORD -AsPlainText -Force
+          Import-PfxCertificate -FilePath "$env:TEMP\cert.pfx" -CertStoreLocation Cert:\CurrentUser\My -Password $pw
+
+      - name: Write minisign updater key
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          [IO.File]::WriteAllText("$env:TEMP\updater.key", $env:TAURI_SIGNING_PRIVATE_KEY)
+
+      - name: Build sparse identity package
+        run: powershell -ExecutionPolicy Bypass -File deploy\scripts\make-identity-package.ps1 -Config glassbar\packaging\app-pack.json
+
+      - name: Build deploy installer
+        run: npm install && npm run tauri build -- --no-bundle
+        working-directory: deploy
+        env:
+          DEPLOY_APP_CONFIG: ${{ github.workspace }}\glassbar\packaging\app-pack.json
+
+      - name: Collect and sign artifacts
+        run: |
+          $version = "$env:GITHUB_REF_NAME".TrimStart("v")
+          $outDir = "release-assets"
+          New-Item -ItemType Directory -Force -Path $outDir | Out-Null
+          Copy-Item deploy\src-tauri\target\release\deploy.exe "$outDir\Glassbar_$version`_x64-setup.exe"
+          $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Where-Object { $_.FullName -match "\\x64\\" } | Sort-Object FullName -Descending | Select-Object -First 1
+          & $signtool.FullName sign /fd SHA256 /f "$env:TEMP\cert.pfx" /p $env:DEPLOY_CERT_PASSWORD "$outDir\Glassbar_$version`_x64-setup.exe"
+          npx tauri signer sign -k "$env:TEMP\updater.key" -p $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD "release-assets\Glassbar_$version`_x64-setup.exe"
+          powershell -ExecutionPolicy Bypass -File deploy\scripts\make-release-manifest.ps1 `
+            -Config glassbar\packaging\app-pack.json `
+            -Artifact "$outDir\Glassbar_$version`_x64-setup.exe" `
+            -Signature "$outDir\Glassbar_$version`_x64-setup.exe.sig" `
+            -Version $version `
+            -Repo alphamerics/liquidbar
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release-assets/latest.json
+            release-assets/Glassbar_*_x64-setup.exe
+            release-assets/Glassbar_*_x64-setup.exe.sig

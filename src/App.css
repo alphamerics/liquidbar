@@ -2126,3 +2126,72 @@ body.app-drag-active * {
     justify-content: flex-start;
   }
 }
+
+.settings-version-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--settings-text, inherit);
+  font-size: 12px;
+  padding: 3px 9px;
+  border-radius: 99px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.settings-mini-button.primary {
+  color: #06121f;
+  background: linear-gradient(120deg, #4da3ff, #6ee7ff);
+  border-color: transparent;
+}
+
+.settings-mini-button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.settings-update-notes {
+  padding: 0 16px 8px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.55;
+  opacity: 0.8;
+  white-space: pre-wrap;
+}
+
+.settings-update-progress {
+  display: inline-block;
+  width: 120px;
+  height: 5px;
+  border-radius: 99px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.settings-update-progress > span {
+  display: block;
+  height: 100%;
+  border-radius: 99px;
+  background: linear-gradient(90deg, #4da3ff, #6ee7ff);
+  transition: width 0.3s ease;
+}
+
+.settings-update-progress[data-indeterminate="true"] > span {
+  width: 40% !important;
+  animation: update-progress-slide 1.1s ease-in-out infinite;
+}
+
+@keyframes update-progress-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(320%); }
+}
+
+.spin {
+  animation: update-spin 0.9s linear infinite;
+}
+
+@keyframes update-spin {
+  to { transform: rotate(360deg); }
+}
+
+.settings-pane-note.error {
+  color: #ff8b93;
+}

@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "installer": "powershell -ExecutionPolicy Bypass -File packaging/build-installer.ps1"
   },
   "dependencies": {
     "@babel/standalone": "^8.0.7",

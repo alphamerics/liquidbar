@@ -155,6 +155,23 @@ fn start_background_services(app_handle: &AppHandle, window: &WebviewWindow, hwn
     wheel_volume::spawn_wheel_volume(app_handle.clone(), hwnd);
     // The "completely disable the taskbar" global toggle hotkey.
     hotkey::spawn_hotkey_service(app_handle.clone());
+    spawn_startup_update_check(app_handle.clone());
+}
+
+/// Silent update check a while after boot so the Updates pane can show a
+/// badge without any network stall on launch. Failures are swallowed: this
+/// is opportunistic.
+fn spawn_startup_update_check(app_handle: AppHandle) {
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(30));
+        let result = tauri::async_runtime::block_on(commands::updates::run_check(&app_handle));
+        if let Ok(status) = result {
+            if status.available {
+                use tauri::Emitter;
+                let _ = app_handle.emit("update://available", status);
+            }
+        }
+    });
 }
 
 /// Re-syncs the GPU surface bounds whenever the overlay window moves or
@@ -253,6 +270,7 @@ pub fn run() {
         .manage(ShellState::default())
         .manage(Mutex::new(GlassbarSettings::default()))
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_page_load(|webview, payload| {
             eprintln!(
                 "[page-load] label={} url={} event={:?}",
@@ -318,7 +336,9 @@ pub fn run() {
             commands::reveal_hidden_window,
             commands::battery_snapshot,
             commands::exit_glassbar,
-            commands::log_message
+            commands::log_message,
+            commands::check_for_update,
+            commands::install_update
         ])
         .build(tauri::generate_context!())
         .expect("failed to start Glassbar");

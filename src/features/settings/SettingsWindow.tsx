@@ -8,6 +8,7 @@ import {
   Puzzle,
   RotateCcw,
   RotateCw,
+  Download,
 } from "lucide-react";
 import {
   getSettings,
@@ -20,6 +21,7 @@ import { useGadgets } from "../gadgets/registry";
 import { HotkeyInput } from "./HotkeyInput";
 import { ControlCenterPane } from "./ControlCenterPane";
 import { Sidebar, type SettingsPane } from "./Sidebar";
+import { UpdatesPane } from "./UpdatesPane";
 import { SettingsGroup, OptionRow } from "./OptionRow";
 import { SliderRow } from "./SliderRow";
 import { ToggleSwitch } from "./ToggleSwitch";
@@ -30,6 +32,7 @@ const PANES: SettingsPane[] = [
   { id: "control-center", label: "Control Center", icon: LayoutGrid },
   { id: "gadgets", label: "Gadgets", icon: Puzzle },
   { id: "liquid-glass", label: "Liquid Glass", icon: Droplets },
+  { id: "updates", label: "Updates", icon: Download },
 ];
 
 const TINT_PRESETS: Array<{ name: string; color: [number, number, number] }> = [
@@ -293,6 +296,8 @@ export function SettingsWindow() {
         {activePane.id === "control-center" && (
           <ControlCenterPane settings={settings} update={update} />
         )}
+
+        {activePane.id === "updates" && <UpdatesPane />}
 
         {activePane.id === "gadgets" && (
           <>

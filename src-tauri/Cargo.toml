@@ -32,6 +32,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
+tauri-plugin-updater = "2"
 # Git deps track each repo's default branch; the [patch] sections below
 # redirect both to the sibling checkouts so local edits apply instantly.
 # Glassbar is an app, never a dependency, so committing patches here is safe
