@@ -615,130 +615,23 @@ body.app-drag-active * {
 }
 
 /* Apple System Settings-style window: sidebar + grouped option cards.
-   Dark by default (as in the reference), with a light system-theme variant. */
+   The window keeps its native frame; the DOM paints full-bleed. It hosts
+   in-app liquid glass (the switch / slider thumbs' local glass floats
+   above the window and refracts its own pixels). All grays come from
+   glass-ui's shared palette (--glass-*); the window only aliases them
+   into its legacy local names. */
 .settings-window {
-  --accent: #0a84ff;
-  --sidebar-bg: #2b2b2d;
-  --content-bg: #28282a;
-  --card-bg: #353537;
-  --separator: rgba(255, 255, 255, 0.08);
-  --muted: rgba(255, 255, 255, 0.55);
+  --accent: var(--glass-accent);
+  --content-bg: var(--glass-bg-window);
+  --card-bg: var(--glass-bg-card);
+  --separator: var(--glass-separator);
+  --muted: var(--glass-text-secondary);
   display: flex;
   width: 100%;
   height: 100vh;
   overflow: hidden;
   background: var(--content-bg);
-  color: #f7f9ff;
-}
-
-@media (prefers-color-scheme: light) {
-  .settings-window {
-    --accent: #007aff;
-    --sidebar-bg: #e9e9eb;
-    --content-bg: #f5f5f7;
-    --card-bg: #ffffff;
-    --separator: rgba(0, 0, 0, 0.12);
-    --muted: rgba(0, 0, 0, 0.5);
-    color: #1b1b1d;
-  }
-}
-
-.settings-sidebar {
-  display: flex;
-  flex: 0 0 224px;
-  flex-direction: column;
-  gap: 2px;
-  padding: 14px 10px;
-  background: var(--sidebar-bg);
-  border-right: 1px solid var(--separator);
-}
-
-.settings-search {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  height: 28px;
-  margin: 0 4px 10px;
-  padding: 0 8px;
-  border-radius: 7px;
-  background: rgba(127, 127, 127, 0.18);
-  color: var(--muted);
-}
-
-.settings-search input {
-  flex: 1;
-  min-width: 0;
-  border: none;
-  background: none;
-  outline: none;
-  color: inherit;
-  font-size: 13px;
-}
-
-.settings-search input::placeholder {
-  color: var(--muted);
-}
-
-/* Replace the native WebKit clear button with our own lucide X icon. */
-.settings-search input[type="search"]::-webkit-search-cancel-button,
-.settings-search input[type="search"]::-webkit-search-decoration {
-  -webkit-appearance: none;
-  appearance: none;
-  display: none;
-}
-
-.settings-search-clear {
-  display: grid;
-  flex: 0 0 auto;
-  width: 16px;
-  height: 16px;
-  place-items: center;
-  padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: none;
-  color: inherit;
-  cursor: pointer;
-}
-
-.settings-search-clear:hover {
-  background: rgba(127, 127, 127, 0.2);
-}
-
-.settings-sidebar nav {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.settings-sidebar-item {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  height: 34px;
-  padding: 0 8px;
-  border: none;
-  border-radius: 8px;
-  background: none;
-  color: inherit;
-  font: inherit;
-  font-size: 13px;
-  text-align: left;
-  cursor: pointer;
-  outline: none;
-}
-
-.settings-sidebar-item:hover {
-  background: rgba(127, 127, 127, 0.15);
-}
-
-.settings-sidebar-item[data-active="true"] {
-  background: var(--accent);
-  color: #ffffff;
-}
-
-.settings-sidebar-item svg {
-  flex: 0 0 auto;
+  color: var(--glass-text-primary);
 }
 
 .settings-content {
@@ -822,8 +715,49 @@ body.app-drag-active * {
   letter-spacing: -0.3px;
 }
 
-.settings-section {
-  margin-top: 18px;
+/* Rows on the sidebar-search results page; clicking one jumps to its pane. */
+.settings-search-result {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  border-radius: 8px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+
+.settings-search-result:hover {
+  background: var(--glass-bg-hover);
+}
+
+.settings-search-result-text {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.settings-search-result-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-search-result-path {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.settings-search-result svg {
+  flex: 0 0 auto;
+  color: var(--muted);
 }
 
 /* The "Reset all settings" action pinned to the bottom of every pane. */
@@ -848,42 +782,11 @@ body.app-drag-active * {
 }
 
 .settings-reset-button:hover {
-  background: rgba(127, 127, 127, 0.16);
+  background: var(--glass-bg-hover);
 }
 
 .settings-reset-button:active {
-  background: rgba(127, 127, 127, 0.26);
-}
-
-.settings-section-title {
-  margin: 0 0 6px;
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--muted);
-}
-
-.settings-card {
-  overflow: hidden;
-  border-radius: 10px;
-  background: var(--card-bg);
-}
-
-.settings-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  min-height: 42px;
-  padding: 8px 14px;
-  font-size: 13px;
-}
-
-.settings-row + .settings-row {
-  border-top: 1px solid var(--separator);
-}
-
-.settings-row-label {
-  flex: 0 1 auto;
+  background: var(--glass-bg-active);
 }
 
 /* "Custom" badge next to gadgets discovered in the custom gadgets folder. */
@@ -891,8 +794,8 @@ body.app-drag-active * {
   margin-left: 8px;
   padding: 2px 7px;
   border-radius: 999px;
-  background: rgba(127, 127, 127, 0.22);
-  color: rgba(255, 255, 255, 0.66);
+  background: var(--glass-bg-active);
+  color: var(--glass-text-secondary);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.04em;
@@ -902,7 +805,7 @@ body.app-drag-active * {
 /* A micro setting nested under its gadget's enable row. */
 .settings-row-micro {
   padding-left: 30px;
-  color: rgba(255, 255, 255, 0.72);
+  color: var(--glass-text-secondary);
   font-size: 12px;
 }
 
@@ -912,9 +815,9 @@ body.app-drag-active * {
   flex: 0 0 auto;
   gap: 2px;
   padding: 2px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid var(--glass-control-border);
   border-radius: 8px;
-  background: rgba(127, 127, 127, 0.14);
+  background: var(--glass-bg-hover);
 }
 
 .settings-segmented-option {
@@ -922,7 +825,7 @@ body.app-drag-active * {
   border: none;
   border-radius: 6px;
   background: transparent;
-  color: rgba(255, 255, 255, 0.6);
+  color: var(--glass-text-secondary);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -932,18 +835,18 @@ body.app-drag-active * {
 }
 
 .settings-segmented-option:hover {
-  color: rgba(255, 255, 255, 0.85);
+  color: var(--glass-text-primary);
 }
 
 .settings-segmented-option[data-checked="true"] {
-  background: rgba(255, 255, 255, 0.18);
+  background: var(--glass-bg-active);
   color: #fff;
 }
 
 /* Free-form explanatory note under a settings group. */
 .settings-pane-note {
   margin: 8px 4px 0;
-  color: rgba(255, 255, 255, 0.5);
+  color: var(--glass-text-secondary);
   font-size: 12px;
   line-height: 1.5;
 }
@@ -960,10 +863,10 @@ body.app-drag-active * {
   align-items: center;
   gap: 6px;
   padding: 6px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid var(--glass-control-border);
   border-radius: 8px;
-  background: rgba(127, 127, 127, 0.14);
-  color: rgba(255, 255, 255, 0.85);
+  background: var(--glass-bg-elevated);
+  color: var(--glass-text-primary);
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
@@ -971,7 +874,7 @@ body.app-drag-active * {
 }
 
 .settings-mini-button:hover {
-  background: rgba(127, 127, 127, 0.26);
+  background: var(--glass-bg-active);
 }
 
 /* Click-to-record shortcut control (a mini button that reads like a
@@ -983,10 +886,10 @@ body.app-drag-active * {
   justify-content: center;
   min-width: 150px;
   padding: 6px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.14);
+  border: 1px solid var(--glass-control-border);
   border-radius: 8px;
-  background: rgba(127, 127, 127, 0.14);
-  color: rgba(255, 255, 255, 0.85);
+  background: var(--glass-bg-elevated);
+  color: var(--glass-text-primary);
   font-size: 12px;
   font-weight: 600;
   font-family: inherit;
@@ -997,52 +900,12 @@ body.app-drag-active * {
 }
 
 .settings-hotkey-input:hover {
-  background: rgba(127, 127, 127, 0.26);
+  background: var(--glass-bg-active);
 }
 
 .settings-hotkey-input[data-recording="true"] {
   border-color: var(--accent, rgba(255, 255, 255, 0.5));
   color: #fff;
-}
-
-/* macOS-style toggle switch. */
-.settings-switch {
-  position: relative;
-  flex: 0 0 auto;
-  width: 38px;
-  height: 22px;
-  padding: 0;
-  border: none;
-  border-radius: 999px;
-  background: rgba(127, 127, 127, 0.32);
-  cursor: pointer;
-  outline: none;
-  transition: background 180ms ease;
-}
-
-.settings-switch[data-checked="true"] {
-  background: var(--accent);
-}
-
-.settings-switch:disabled {
-  opacity: 0.45;
-  cursor: default;
-}
-
-.settings-switch-knob {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
-  transition: transform 180ms ease;
-}
-
-.settings-switch[data-checked="true"] .settings-switch-knob {
-  transform: translateX(16px);
 }
 
 /* macOS-style radio (text variant) and tint swatch variant. */
@@ -1072,7 +935,7 @@ body.app-drag-active * {
   width: 16px;
   height: 16px;
   flex: 0 0 auto;
-  border: 1.5px solid rgba(127, 127, 127, 0.55);
+  border: 1.5px solid var(--glass-control-border-strong);
   border-radius: 50%;
 }
 
@@ -1080,8 +943,12 @@ body.app-drag-active * {
    (e.g. the Quality picker's padded capsule). */
 .settings-row-stacked {
   flex-direction: column;
-  align-items: flex-start;
+  align-items: stretch;
   gap: 8px;
+}
+
+.settings-row-stacked .glass-list-item-trailing {
+  flex: 1 0 100%;
 }
 
 /* The Liquid Glass tab's Quality picker (Auto / High / Balanced /
@@ -1095,12 +962,12 @@ body.app-drag-active * {
 
 /* A card that carries the row padding itself (e.g. the Performance
    card's Quality picker): inner rows drop their own padding so the
-   inset stays cohesive with the rest of the app (8px 14px). */
+   inset stays cohesive with the rest of the app (10px 14px). */
 .settings-card-padded {
-  padding: 8px 14px;
+  padding: 10px 14px;
 }
 
-.settings-card-padded .settings-row {
+.settings-card-padded .glass-list-item {
   padding: 0;
 }
 
@@ -1114,13 +981,7 @@ body.app-drag-active * {
 }
 
 .settings-quality-group .settings-radio-option:hover {
-  background: rgba(127, 127, 127, 0.16);
-}
-
-@media (prefers-color-scheme: dark) {
-  .settings-radio {
-    border-color: rgba(255, 255, 255, 0.4);
-  }
+  background: var(--glass-bg-hover);
 }
 
 .settings-radio[data-checked="true"] {
@@ -1148,7 +1009,7 @@ body.app-drag-active * {
   height: 22px;
   border: none;
   background: var(--swatch);
-  box-shadow: inset 0 0 0 1px rgba(127, 127, 127, 0.35);
+  box-shadow: inset 0 0 0 1px var(--glass-control-border-strong);
 }
 
 .settings-radio-option[data-swatch][data-checked="true"] .settings-radio {
@@ -1172,52 +1033,20 @@ body.app-drag-active * {
 }
 
 .settings-color-input::-webkit-color-swatch {
-  border: 1px solid rgba(127, 127, 127, 0.35);
+  border: 1px solid var(--glass-control-border-strong);
   border-radius: 50%;
 }
 
-/* Slider rows: label left, track fills the middle, value on the right. */
-.settings-slider-row .settings-row-label {
+/* Slider rows: label left, track fills the middle, value on the right.
+   The fixed 150px label column is the text wrapper (the label itself sits
+   in a column flex, so sizing it would stretch its height). */
+.settings-slider-row .glass-list-item-text {
   flex: 0 0 150px;
 }
 
-.settings-slider {
-  position: relative;
-  display: flex;
+.settings-slider-row .glass-list-item-trailing {
   flex: 1 1 auto;
-  align-items: center;
-  height: 20px;
-  touch-action: none;
-}
-
-.settings-slider-track {
-  position: relative;
-  width: 100%;
-  height: 4px;
-  border-radius: 999px;
-  background: rgba(127, 127, 127, 0.28);
-}
-
-.settings-slider-range {
-  position: absolute;
-  height: 100%;
-  border-radius: 999px;
-  background: var(--accent);
-}
-
-.settings-slider-thumb {
-  display: block;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #ffffff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
-  cursor: grab;
-}
-
-.settings-slider-thumb:focus {
-  outline: none;
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 45%, transparent);
+  gap: 12px;
 }
 
 .settings-slider-value {
@@ -1228,7 +1057,7 @@ body.app-drag-active * {
   text-align: right;
 }
 
-  /* ---- Control center (the settings cog's panel) ----
+/* ---- Control center (the settings cog's panel) ----
      Every container (tiles, slider cards, lists, the settings button) carries
      its own native liquid glass surface; the panel itself is transparent. */
   .cc-content {

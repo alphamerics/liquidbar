@@ -1,3 +1,5 @@
+import { GlassSwitch } from "glass-ui";
+
 interface ToggleSwitchProps {
   checked: boolean;
   onChange: (checked: boolean) => void;
@@ -5,24 +7,15 @@ interface ToggleSwitchProps {
   disabled?: boolean;
 }
 
+/** The settings toggle: glass-ui's liquid-glass switch with the shared
+    control API (label-driven a11y, disabled state). */
 export function ToggleSwitch({ checked, onChange, label, disabled }: ToggleSwitchProps) {
   return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      title={label}
-      className="settings-switch"
-      data-checked={checked}
+    <GlassSwitch
+      checked={checked}
+      onChange={onChange}
+      label={label}
       disabled={disabled}
-      onClick={() => {
-        if (!disabled) {
-          onChange(!checked);
-        }
-      }}
-    >
-      <span className="settings-switch-knob" />
-    </button>
+    />
   );
 }

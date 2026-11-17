@@ -293,7 +293,10 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     );
     let window = tauri::WebviewWindowBuilder::new(&app, "settings", builder_url)
         .title("Glassbar Settings")
-        .skip_taskbar(true)
+        // NOT skip_taskbar: taskbar-hidden hosts are refused by the local
+        // glass capture (WGC fails with 0x80070057 on such windows), so the
+        // held thumbs' feed could never start. The settings window shows
+        // its taskbar button like any normal app window.
         .inner_size(680.0, 620.0)
         .center()
         .resizable(true)
@@ -317,9 +320,26 @@ pub async fn open_settings_window(app: tauri::AppHandle) -> Result<(), String> {
     app.state::<RendererState>().set_settings_open(true);
     {
         let handle = app.clone();
+        let tracked = window.clone();
         window.on_window_event(move |event| {
-            if matches!(event, tauri::WindowEvent::Destroyed) {
-                handle.state::<RendererState>().set_settings_open(false);
+            match event {
+                tauri::WindowEvent::Destroyed => {
+                    handle.state::<RendererState>().set_settings_open(false);
+                }
+                // Re-sync the window's own glass whenever it moves, resizes,
+                // or is activated — activation alone raises the host above
+                // its glass, and tao emits no Moved/Resized for a
+                // z-order-only change.
+                tauri::WindowEvent::Moved(_)
+                | tauri::WindowEvent::Resized(_)
+                | tauri::WindowEvent::Focused(true) => {
+                    if let Ok(hwnd) = tracked.hwnd() {
+                        handle.state::<RendererState>().sync_host_bounds(
+                            windows::Win32::Foundation::HWND(hwnd.0 as *mut _),
+                        );
+                    }
+                }
+                _ => {}
             }
         });
     }

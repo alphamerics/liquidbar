@@ -251,8 +251,10 @@ impl RendererState {
     }
 
     /// Delegates to the shared manager (see `glass-ui::MenuGlassManager`).
-    pub fn prewarm_glasses(&self, overlay: HWND, count: usize) -> Result<(), String> {
-        self.menus.prewarm(overlay, count, false)
+    /// `local` pre-warms in-app (local-feed) surfaces — the settings
+    /// window's switch/slider thumbs — instead of the global ones.
+    pub fn prewarm_glasses(&self, overlay: HWND, count: usize, local: bool) -> Result<(), String> {
+        self.menus.prewarm(overlay, count, local)
     }
 
     /// Renders (or removes) a native liquid glass surface behind one menu.
@@ -270,14 +272,29 @@ impl RendererState {
         group: Option<&str>,
         spring: bool,
         local: bool,
+        shape: Option<liquid_glass::GlassShape>,
+        metaball: Option<glass_ui::MetaballPush>,
+        material: Option<glass_ui::GlassMaterialOverride>,
     ) -> Result<(), String> {
         if key.starts_with("preview") {
             return self.position_preview_glass(overlay, rect, radius);
         }
         self.menus.position_menu_glass(
-            overlay, key, rect, radius, instant, glass_fade, group, spring, local, None, None,
-            None,
+            overlay, key, rect, radius, instant, glass_fade, group, spring, local, shape,
+            metaball, material,
         )
+    }
+
+    /// Delegates the CSS-style transform tween to the shared manager — the
+    /// held glass thumbs' grow/settle motion (glass-ui's `GlassSwitch` and
+    /// `GlassSlider` push these through `animate_menu_glass`).
+    pub fn animate_menu_glass(
+        &self,
+        overlay: HWND,
+        key: &str,
+        animation: glass_ui::GlassTransformAnimation,
+    ) -> Result<(), String> {
+        self.menus.animate_menu_glass(overlay, key, animation)
     }
 
     /// Delegates the webview's reconciliation sweep to the shared manager,
@@ -627,6 +644,12 @@ impl RendererState {
     /// Collects every glass surface's window handle and compositor. The
     /// caller must release all renderer locks before using the handles (see
     /// the deadlock notes on [`Self::translate_surfaces`]).
+    ///
+    /// The shared manager also hosts OTHER windows' glass (the settings
+    /// window's local thumbs) — the taskbar's z-order and slide operations
+    /// must only ever touch the OVERLAY's own surfaces, or parking the
+    /// taskbar beneath the foreground window would bury the settings
+    /// window's thumbs below that very window.
     fn collect_surface_targets(&self) -> Vec<(isize, SharedCompositor)> {
         let mut targets: Vec<(isize, SharedCompositor)> = Vec::new();
         if let Some(surface) = self
@@ -637,7 +660,10 @@ impl RendererState {
         {
             targets.push((surface.hwnd_addr(), surface.compositor()));
         }
-        targets.extend(self.menus.surface_targets());
+        let host = *self.overlay.lock().expect("overlay lock poisoned");
+        if let Some(host) = host {
+            targets.extend(self.menus.surface_targets_for_host(host));
+        }
         if let Some(preview) = self
             .preview_glass
             .lock()
@@ -1174,6 +1200,14 @@ impl RendererState {
             .take();
     }
 
+    /// Host-scoped bounds re-sync for secondary windows: re-anchors and
+    /// re-pins only ONE host's glass (the settings window's
+    /// Moved/Resized/Focused hook). The pill and preview live on the
+    /// overlay and must not be touched by another host's event pass.
+    pub fn sync_host_bounds(&self, host: HWND) {
+        self.menus.sync_host_bounds(host.0 as isize);
+    }
+
     pub fn sync_overlay_bounds(&self, overlay: HWND) -> Result<(), String> {
         // During the auto-hide slide the overlay fires Moved events every
         // step; translate_surfaces already keeps everything aligned, and a
@@ -1194,7 +1228,10 @@ impl RendererState {
         {
             surface.sync_bounds(overlay.0 as isize)?;
         }
-        self.menus.sync_bounds(overlay);
+        // Host-scoped: the shared manager also holds other windows' glass
+        // (the settings window's local thumbs) — re-anchoring everything
+        // against the overlay would yank those onto the taskbar's geometry.
+        self.menus.sync_host_bounds(overlay.0 as isize);
         if let Some(preview) = self
             .preview_glass
             .lock()

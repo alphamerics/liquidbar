@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useState } from "react";
 import { emit } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
+  ChevronRight,
   Droplets,
   FolderOpen,
   LayoutGrid,
@@ -10,6 +12,7 @@ import {
   RotateCw,
   Download,
 } from "lucide-react";
+import { GlassSidebar, type GlassSidebarItem } from "glass-ui";
 import {
   getSettings,
   openGadgetsFolder,
@@ -20,19 +23,79 @@ import {
 import { useGadgets } from "../gadgets/registry";
 import { HotkeyInput } from "./HotkeyInput";
 import { ControlCenterPane } from "./ControlCenterPane";
-import { Sidebar, type SettingsPane } from "./Sidebar";
 import { UpdatesPane } from "./UpdatesPane";
 import { SettingsGroup, OptionRow } from "./OptionRow";
 import { SliderRow } from "./SliderRow";
 import { ToggleSwitch } from "./ToggleSwitch";
 import { RadioGroup, RadioOption } from "./RadioOption";
 
-const PANES: SettingsPane[] = [
-  { id: "taskbar", label: "Taskbar", icon: PanelBottom },
-  { id: "control-center", label: "Control Center", icon: LayoutGrid },
-  { id: "gadgets", label: "Gadgets", icon: Puzzle },
-  { id: "liquid-glass", label: "Liquid Glass", icon: Droplets },
-  { id: "updates", label: "Updates", icon: Download },
+const PANES: GlassSidebarItem[] = [
+  { id: "taskbar", label: "Taskbar", icon: <PanelBottom size={15} strokeWidth={2} /> },
+  { id: "control-center", label: "Control Center", icon: <LayoutGrid size={15} strokeWidth={2} /> },
+  { id: "gadgets", label: "Gadgets", icon: <Puzzle size={15} strokeWidth={2} /> },
+  { id: "liquid-glass", label: "Liquid Glass", icon: <Droplets size={15} strokeWidth={2} /> },
+  { id: "updates", label: "Updates", icon: <Download size={15} strokeWidth={2} /> },
+];
+
+/** Every searchable settings entry, in pane order. The sidebar's search
+    drives a results page built from this index. */
+const SEARCH_INDEX: Array<{
+  pane: string;
+  group: string;
+  label: string;
+  keywords?: string[];
+}> = [
+  // Taskbar
+  { pane: "taskbar", group: "General", label: "Open on startup", keywords: ["launch", "login", "boot"] },
+  { pane: "taskbar", group: "Layout", label: "Reserve screen space", keywords: ["maximize", "overlap"] },
+  { pane: "taskbar", group: "Layout", label: "Pinned apps on the left", keywords: ["side", "order"] },
+  { pane: "taskbar", group: "Layout", label: "Hide Windows taskbar" },
+  { pane: "taskbar", group: "Layout", label: "Fully hide when not hovered", keywords: ["auto-hide"] },
+  { pane: "taskbar", group: "Layout", label: "Reveal under fullscreen apps" },
+  { pane: "taskbar", group: "Layout", label: "Taskbar height" },
+  { pane: "taskbar", group: "Layout", label: "Corner radius", keywords: ["rounded", "pill"] },
+  { pane: "taskbar", group: "Layout", label: "Icon size" },
+  { pane: "taskbar", group: "Layout", label: "Icon gap", keywords: ["spacing"] },
+  { pane: "taskbar", group: "Disable taskbar", label: "Toggle shortcut", keywords: ["hotkey", "hide"] },
+  { pane: "taskbar", group: "Resize animation", label: "Squash & stretch" },
+  { pane: "taskbar", group: "Resize animation", label: "Bounciness", keywords: ["spring"] },
+  { pane: "taskbar", group: "Resize animation", label: "Duration" },
+  { pane: "taskbar", group: "Reveal strip", label: "Height" },
+  { pane: "taskbar", group: "Reveal strip", label: "Height while hovered" },
+  // Control Center
+  { pane: "control-center", group: "Edit mode", label: "Edit the control center layout" },
+  { pane: "control-center", group: "Edit mode", label: "Restore the default layout" },
+  { pane: "control-center", group: "Widgets", label: "Widget toggles", keywords: ["gadgets", "tiles"] },
+  // Gadgets
+  { pane: "gadgets", group: "Taskbar gadgets", label: "Enable and disable gadgets", keywords: ["widgets"] },
+  { pane: "gadgets", group: "Taskbar gadgets", label: "Temperature unit", keywords: ["weather", "fahrenheit", "celsius"] },
+  { pane: "gadgets", group: "Custom gadgets", label: "Gadget sources (.tsx / .jsx)", keywords: ["folder", "reload"] },
+  // Liquid Glass
+  { pane: "liquid-glass", group: "Performance", label: "Quality", keywords: ["gpu", "tier", "efficiency"] },
+  { pane: "liquid-glass", group: "Liquid Glass", label: "Refraction strength" },
+  { pane: "liquid-glass", group: "Liquid Glass", label: "Edge band" },
+  { pane: "liquid-glass", group: "Liquid Glass", label: "Blur radius" },
+  { pane: "liquid-glass", group: "Liquid Glass", label: "Blur samples" },
+  { pane: "liquid-glass", group: "Liquid Glass", label: "Tint strength", keywords: ["color", "hue"] },
+  { pane: "liquid-glass", group: "Liquid Glass", label: "Tint color" },
+  { pane: "liquid-glass", group: "Liquid Glass", label: "Vibrancy" },
+  { pane: "liquid-glass", group: "Liquid Glass", label: "Vibrancy saturation" },
+  { pane: "liquid-glass", group: "Liquid Glass", label: "Chromatic offset", keywords: ["aberration"] },
+  { pane: "liquid-glass", group: "Liquid Glass", label: "Chromatic blend", keywords: ["aberration"] },
+  { pane: "liquid-glass", group: "Outline", label: "Strength" },
+  { pane: "liquid-glass", group: "Outline", label: "Thickness" },
+  { pane: "liquid-glass", group: "Outline", label: "Light angle" },
+  { pane: "liquid-glass", group: "Outline", label: "Mirror" },
+  { pane: "liquid-glass", group: "Outline", label: "Fade distance" },
+  { pane: "liquid-glass", group: "Black border", label: "Thickness" },
+  { pane: "liquid-glass", group: "Black border", label: "Opacity" },
+  { pane: "liquid-glass", group: "Reveal animation", label: "Turbulence strength" },
+  { pane: "liquid-glass", group: "Reveal animation", label: "Turbulence scale" },
+  { pane: "liquid-glass", group: "Reveal animation", label: "Wobble" },
+  // Updates
+  { pane: "updates", group: "Version", label: "Current version" },
+  { pane: "updates", group: "Version", label: "Check GitHub releases for a new version" },
+  { pane: "updates", group: "Update", label: "Update and restart", keywords: ["install"] },
 ];
 
 const TINT_PRESETS: Array<{ name: string; color: [number, number, number] }> = [
@@ -64,6 +127,7 @@ const sameTint = (a: [number, number, number], b: [number, number, number]) =>
 
 export function SettingsWindow() {
   const [pane, setPane] = useState("taskbar");
+  const [query, setQuery] = useState("");
   const [settings, setLocal] = useState<GlassbarSettings | null>(null);
   const gadgets = useGadgets();
 
@@ -73,6 +137,23 @@ export function SettingsWindow() {
         setLocal(loaded);
       }
     });
+  }, []);
+
+  // The borderless settings window has no titlebar: Escape closes it.
+  // Inputs are skipped — the hotkey recorder uses Escape to cancel.
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, .settings-hotkey-input")) {
+        return;
+      }
+      void getCurrentWindow().close();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
   const update = (patch: Partial<GlassbarSettings>) => {
@@ -120,12 +201,85 @@ export function SettingsWindow() {
 
   const activePane = PANES.find((candidate) => candidate.id === pane) ?? PANES[0];
 
+  // The sidebar search drives a results page: matches across every pane,
+  // grouped by pane, each result jumping to its pane on click.
+  const searchResults = SEARCH_INDEX.filter((entry) => {
+    const haystack = [
+      entry.label,
+      entry.group,
+      PANES.find((candidate) => candidate.id === entry.pane)?.label ?? "",
+      ...(entry.keywords ?? []),
+    ]
+      .join(" ")
+      .toLowerCase();
+    return query
+      .trim()
+      .toLowerCase()
+      .split(/\s+/)
+      .every((term) => haystack.includes(term));
+  });
+  const searching = query.trim().length > 0;
+
   return (
     <div className="settings-window">
-      <Sidebar panes={PANES} activeId={activePane.id} onSelect={setPane} />
+      <GlassSidebar
+        items={PANES}
+        activeId={activePane.id}
+        onSelect={(id) => {
+          setPane(id);
+          setQuery("");
+        }}
+        search={query}
+        onSearchChange={setQuery}
+        placeholder="Search"
+      />
       <main className="settings-content">
-        <h1 className="settings-content-title">{activePane.label}</h1>
+        <h1 className="settings-content-title" data-tauri-drag-region>
+          {searching
+            ? `Results for “${query.trim()}”`
+            : activePane.label}
+        </h1>
+        {searching && (
+          <>
+            {searchResults.length === 0 && (
+              <p className="settings-pane-note">No matching settings.</p>
+            )}
+            {PANES.map(({ id, label }) => {
+              const matches = searchResults.filter((entry) => entry.pane === id);
+              if (matches.length === 0) {
+                return null;
+              }
+              return (
+                <SettingsGroup key={id} title={label}>
+                  {matches.map((entry) => (
+                    <button
+                      key={`${entry.group}-${entry.label}`}
+                      type="button"
+                      className="settings-search-result"
+                      onClick={() => {
+                        setPane(id);
+                        setQuery("");
+                      }}
+                    >
+                      <span className="settings-search-result-text">
+                        <span className="settings-search-result-label">
+                          {entry.label}
+                        </span>
+                        <span className="settings-search-result-path">
+                          {label} → {entry.group}
+                        </span>
+                      </span>
+                      <ChevronRight size={14} strokeWidth={2} aria-hidden />
+                    </button>
+                  ))}
+                </SettingsGroup>
+              );
+            })}
+          </>
+        )}
 
+        {!searching && (
+          <>
         {activePane.id === "taskbar" && (
           <>
             <SettingsGroup title="General">
@@ -606,6 +760,8 @@ export function SettingsWindow() {
               />
             </SettingsGroup>
           </>
+        )}
+        </>
         )}
 
         <div className="settings-footer">

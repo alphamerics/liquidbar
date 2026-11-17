@@ -17,6 +17,7 @@ import {
 } from "../taskbar/cc/layout";
 import type { GlassbarSettings } from "../../lib/shell";
 import { SettingsGroup, OptionRow } from "./OptionRow";
+import { GlassListItem } from "glass-ui";
 import { ToggleSwitch } from "./ToggleSwitch";
 
 /** Pointer-start bookkeeping kept outside React state (updates every move). */
@@ -305,9 +306,7 @@ export function ControlCenterPane({
           );
         })}
         {notice && (
-          <div className="settings-row">
-            <span className="ccx-notice">{notice}</span>
-          </div>
+          <GlassListItem label={<span className="ccx-notice">{notice}</span>} />
         )}
       </SettingsGroup>
 

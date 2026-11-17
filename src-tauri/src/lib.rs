@@ -287,6 +287,7 @@ pub fn run() {
             commands::activate_window,
             commands::close_app,
             commands::position_menu_glass,
+            commands::animate_menu_glass,
             commands::sync_menu_glasses,
             commands::prewarm_menu_glass,
             commands::set_window_preview,

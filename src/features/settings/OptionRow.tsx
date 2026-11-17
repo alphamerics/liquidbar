@@ -1,3 +1,4 @@
+import { GlassList, GlassListItem } from "glass-ui";
 import type { ReactNode } from "react";
 
 interface SettingsGroupProps {
@@ -6,13 +7,12 @@ interface SettingsGroupProps {
   className?: string;
 }
 
-/** A titled group of rows, rendered as one rounded card. */
+/** A titled group of rows, rendered as one rounded glass-ui list card. */
 export function SettingsGroup({ title, children, className }: SettingsGroupProps) {
   return (
-    <section className="settings-section">
-      {title ? <h2 className="settings-section-title">{title}</h2> : null}
-      <div className={`settings-card${className ? ` ${className}` : ""}`}>{children}</div>
-    </section>
+    <GlassList title={title} className={className}>
+      {children}
+    </GlassList>
   );
 }
 
@@ -25,9 +25,8 @@ interface OptionRowProps {
 /** A single settings row: label on the left, control on the right. */
 export function OptionRow({ label, children, className }: OptionRowProps) {
   return (
-    <div className={`settings-row${className ? ` ${className}` : ""}`}>
-      <span className="settings-row-label">{label}</span>
+    <GlassListItem label={label} className={className}>
       {children}
-    </div>
+    </GlassListItem>
   );
 }
