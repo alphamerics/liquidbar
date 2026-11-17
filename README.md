@@ -101,3 +101,77 @@ npm run tauri build
 Tauri bundles the app and automatically ships every `[[bin]]` target —
 including the `glass-broker` trampoline — beside the executable, which is
 where the liquid-glass library's clients spawn the broker.
+
+## Releasing
+
+The GitHub Actions release workflow builds the Deploy installer and publishes
+the signed installer, its signature, and `latest.json` to GitHub Releases.
+The installed app checks the manifest configured in `src-tauri/tauri.conf.json`.
+The manifest and installer must be publicly reachable by installed clients.
+
+The Moonshift rebrand changes the Windows identity, installer registry key,
+and settings directory. It does not migrate earlier installations or settings:
+uninstall the previous version before installing this one, and back up any
+settings or custom gadgets you want to move manually. The old installation's
+uninstaller should be used while it is still installed. Publish the matching
+changes in the sibling repositories before building a release.
+
+### One-time setup
+
+1. Check out `glassbar`, `glass-ui`, `liquid-glass`, and `deploy` as sibling
+   directories. Install the dependencies needed by the signing script. From
+   the parent directory, generate the signing materials:
+
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\deploy\scripts\setup-signing.ps1 -Config .\glassbar\packaging\app-pack.json
+   ```
+
+   Keep the private keys and password backed up securely. The script reuses
+   an existing updater key, so pass its original password when reusing one;
+   generating a new password does not change the existing key's password.
+   The Windows certificate created by the script is self-signed, so it does
+   not provide the public trust of a commercial code-signing certificate.
+2. Set `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` to the generated
+   updater **public** key and commit it. The private key must match this key
+   for installed versions to verify updates; keep the same key across releases.
+3. Add these repository secrets under **Settings > Secrets and variables >
+   Actions**:
+
+   - `TAURI_SIGNING_PRIVATE_KEY`: contents of `packaging\keys\Glassbar-update.key`.
+   - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: updater key password.
+   - `WINDOWS_CERT_PFX`: base64-encoded contents of `packaging\keys\Glassbar.pfx`.
+   - `WINDOWS_CERT_PASSWORD`: PFX password.
+
+   For example, copy the PFX as base64 without printing it:
+
+   ```powershell
+   [Convert]::ToBase64String([IO.File]::ReadAllBytes((Resolve-Path .\glassbar\packaging\keys\Glassbar.pfx))) | Set-Clipboard
+   ```
+
+   The workflow also needs access to the three sibling GitHub repositories;
+   its default checkout token cannot access other private repositories unless
+   the checkout authentication is separately configured.
+
+### Publish a version
+
+From a clean Glassbar checkout on a branch tracking its remote:
+
+```powershell
+npm run release             # 0.1.0 -> 0.1.1
+npm run release -- minor    # 0.1.0 -> 0.2.0
+npm run release -- major    # 0.1.0 -> 1.0.0
+```
+
+The command checks that the tracked branch and remote have the same commit,
+the updater public key is configured, and the five version files agree. It
+increments the version, commits the version files, creates an annotated tag,
+and atomically pushes both the branch and tag to the tracked remote. The tag
+starts the **Release** workflow; watch that run in GitHub Actions. A successful
+push does not mean the build or release succeeded.
+
+If a command fails after changing files or creating the commit or tag, inspect
+`git status`, the local commit, and tag before retrying. If the atomic push
+failed, after resolving the issue you can push the existing commit and tag
+together rather than creating another release. Manual workflow dispatch must
+select a matching version tag, not a branch. Test the first release by
+installing it, publishing a newer version, and using **Settings > Updates**.

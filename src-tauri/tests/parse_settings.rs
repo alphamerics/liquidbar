@@ -4,7 +4,7 @@ use glassbar_lib::GlassbarSettings;
 fn parse_real_settings_file() {
     let raw = std::fs::read_to_string(concat!(
         env!("USERPROFILE"),
-        r"\AppData\Roaming\org.newmoonworks.glassbar\settings.json"
+        r"\AppData\Roaming\studio.moonshift.glassbar\settings.json"
     ))
     .expect("settings.json readable");
     let settings: GlassbarSettings = serde_json::from_str(&raw).expect("parses");

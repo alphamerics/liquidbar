@@ -1,8 +1,8 @@
 {
   "appName": "Glassbar",
   "description": "A GPU-rendered Windows 11 taskbar replacement",
-  "publisher": "New Moon Works",
-  "identityName": "NewMoonWorks.Glassbar",
+  "publisher": "Moonshift",
+  "identityName": "Moonshift.Glassbar",
   "identityPublisher": "CN=Glassbar",
   "identityCapabilities": [
     "runFullTrust",
@@ -11,7 +11,7 @@
   ],
   "versionSource": "../src-tauri/tauri.conf.json",
   "defaultDir": "%LOCALAPPDATA%\\Programs\\Glassbar",
-  "registryKey": "Software\\NewMoonWorks\\Glassbar",
+  "registryKey": "Software\\Moonshift\\Glassbar",
   "launchExe": "glassbar.exe",
   "startMenuName": "Glassbar",
   "autostartName": "Glassbar",

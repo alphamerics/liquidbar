@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Checkout glassbar
         uses: actions/checkout@v4
+        with:
+          path: glassbar
 
       - name: Checkout sibling crates (Cargo [patch] targets)
         uses: actions/checkout@v4
@@ -34,7 +36,7 @@ jobs:
       - name: Checkout deploy (installer)
         uses: actions/checkout@v4
         with:
-          repository: alphamerics/deploy
+          repository: moonshift-studio/Deploy
           path: deploy
 
       - name: Install Node
@@ -45,15 +47,30 @@ jobs:
       - name: Install Rust (msvc)
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Verify release tag and versions
+        working-directory: glassbar
+        run: |
+          if ("${{ github.ref_type }}" -ne "tag") { throw "Run releases from a version tag, not a branch." }
+          node scripts/release.mjs --verify-tag "$env:GITHUB_REF_NAME"
+          if ($LASTEXITCODE -ne 0) { throw "Release verification failed." }
+
       - name: Restore cargo caches
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: glassbar/src-tauri -> target
           prefix-key: glassbar
 
+      - name: Install glass-ui dependencies
+        working-directory: glass-ui
+        run: npm ci
+
+      - name: Install Glassbar dependencies
+        working-directory: glassbar
+        run: npm ci
+
       - name: Build Glassbar
         working-directory: glassbar
-        run: npm ci && npm run tauri build -- --no-bundle
+        run: npm run tauri build -- --no-bundle
 
       - name: Import code-signing certificate
         env:
@@ -72,8 +89,12 @@ jobs:
       - name: Build sparse identity package
         run: powershell -ExecutionPolicy Bypass -File deploy\scripts\make-identity-package.ps1 -Config glassbar\packaging\app-pack.json
 
+      - name: Install deploy dependencies
+        working-directory: deploy
+        run: npm install
+
       - name: Build deploy installer
-        run: npm install && npm run tauri build -- --no-bundle
+        run: npm run tauri build -- --no-bundle
         working-directory: deploy
         env:
           DEPLOY_APP_CONFIG: ${{ github.workspace }}\glassbar\packaging\app-pack.json
@@ -85,18 +106,35 @@ jobs:
           New-Item -ItemType Directory -Force -Path $outDir | Out-Null
           Copy-Item deploy\src-tauri\target\release\deploy.exe "$outDir\Glassbar_$version`_x64-setup.exe"
           $signtool = Get-ChildItem "C:\Program Files (x86)\Windows Kits\10\bin" -Filter signtool.exe -Recurse | Where-Object { $_.FullName -match "\\x64\\" } | Sort-Object FullName -Descending | Select-Object -First 1
+          if (-not $signtool) { throw "SignTool not found." }
           & $signtool.FullName sign /fd SHA256 /f "$env:TEMP\cert.pfx" /p $env:DEPLOY_CERT_PASSWORD "$outDir\Glassbar_$version`_x64-setup.exe"
-          npx tauri signer sign -k "$env:TEMP\updater.key" -p $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD "release-assets\Glassbar_$version`_x64-setup.exe"
-          powershell -ExecutionPolicy Bypass -File deploy\scripts\make-release-manifest.ps1 `
+          if ($LASTEXITCODE -ne 0) { throw "Installer code signing failed." }
+          Push-Location glassbar
+          try {
+            npx --no-install tauri signer sign --private-key-path "$env:TEMP\updater.key" "$env:GITHUB_WORKSPACE\$outDir\Glassbar_$version`_x64-setup.exe"
+            if ($LASTEXITCODE -ne 0) { throw "Updater signing failed." }
+          } finally {
+            Pop-Location
+          }
+          pwsh -NoProfile -ExecutionPolicy Bypass -File deploy\scripts\make-release-manifest.ps1 `
             -Config glassbar\packaging\app-pack.json `
             -Artifact "$outDir\Glassbar_$version`_x64-setup.exe" `
             -Signature "$outDir\Glassbar_$version`_x64-setup.exe.sig" `
             -Version $version `
-            -Repo alphamerics/liquidbar
+            -Repo "${{ github.repository }}"
+          if ($LASTEXITCODE -ne 0) { throw "Release manifest generation failed." }
+          $manifestPath = (Resolve-Path "$outDir\latest.json").Path
+          $manifestJson = [IO.File]::ReadAllText($manifestPath)
+          $manifest = $manifestJson | ConvertFrom-Json
+          if ($manifest.version -ne $version -or -not $manifest.platforms.'windows-x86_64'.signature -or -not $manifest.platforms.'windows-x86_64'.url) {
+            throw "Generated update manifest is incomplete or has the wrong version."
+          }
+          [IO.File]::WriteAllText($manifestPath, $manifestJson, [Text.UTF8Encoding]::new($false))
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
+          fail_on_unmatched_files: true
           files: |
             release-assets/latest.json
             release-assets/Glassbar_*_x64-setup.exe

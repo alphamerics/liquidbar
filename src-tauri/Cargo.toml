@@ -2,7 +2,7 @@
 name = "glassbar"
 version = "0.1.0"
 description = "A GPU-rendered Windows 11 taskbar replacement"
-authors = ["you"]
+authors = ["Moonshift"]
 edition = "2021"
 default-run = "glassbar"
 
@@ -103,4 +103,3 @@ strip = true
 liquid-glass = { path = "../../liquid-glass" }
 [patch."https://github.com/alphamerics/glass-ui"]
 glass-ui = { path = "../../glass-ui/native" }
-
