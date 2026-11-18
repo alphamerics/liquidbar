@@ -1,6 +1,6 @@
 [package]
 name = "glassbar"
-version = "0.1.2"
+version = "0.1.3"
 description = "A GPU-rendered Windows 11 taskbar replacement"
 authors = ["Moonshift"]
 edition = "2021"
